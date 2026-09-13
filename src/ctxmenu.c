@@ -1,0 +1,533 @@
+#include "ctxmenu.h"
+#include "catalogo.h"
+#include "descoberta.h"
+#include "syncprog.h"
+#include "trakt.h"
+#include "extras.h"
+#include "gfx.h"
+#include "text.h"
+#include "tex_cache.h"
+#include "layout.h"
+#include "anim.h"
+#include "ajustes.h"
+#include "progresso.h"
+#include "salvos.h"
+#include <stdio.h>
+#include <string.h>
+
+// Mantem o header publico de Trakt estavel: estas leituras sao o contrato
+// interno entre a modal e as escritas assincronas do proprio port.
+extern int trakt_operacao_estado(int tipo);
+extern int trakt_watchlist_tipo(const char *imdb, const char *tipo, int adicionar);
+extern int trakt_assistido_tipo(const char *imdb, const char *tipo, int marcar);
+extern int cat_historico_estado_item(int indice);
+extern void cat_historico_definir_id(const char *imdb, const char *tipo, int visto);
+
+enum { CTX_OP_NENHUMA, CTX_OP_LISTA = 1, CTX_OP_HISTORICO = 2 };
+enum { CTX_PENDENTE = 1, CTX_CONFIRMADA = 2, CTX_FALHA = 3 };
+
+// MEDIDO no bundle 1.0.4: o dialogo tem 37,5vw de largura (720 px em 1920).
+#define CTX_W      720.0f
+#define CTX_PAD     44.0f
+#define CTX_LINHA   86.0f     // altura de cada botao
+#define CTX_GAP     12.0f
+#define CTX_CAB    148.0f     // titulo, estados e rotulo do grupo
+#define CTX_STATUS_H 34.0f
+#define CTX_RODAPE  70.0f
+
+static int   aberto, idx = -1, foco, pedDetalhes = -1;
+static float anim;
+static int   operacao, intencao, estadoOperacao;
+static int   espelhoAplicado;
+static char  operacaoImdb[16];
+static volatile int holdAtivo, holdCancelado, holdPronto;
+// O OK QUE ABRIU O MODAL AINDA ESTA AFUNDADO.
+//
+// O menu do cartaz abre NO LIMIAR, com o dedo ainda no botao (home.c dispara
+// em home_atualizar, nao no KEYUP) — e isso e de proposito: esperar a soltura
+// faria a barra encher na tela sem nada acontecer. O preco e que a repeticao
+// automatica do controle continua mandando KEYDOWN de OK, e o modal recem-
+// aberto os tratava como escolha: "quando abre o modal e eu ainda estou
+// segurando, ele ja clica sozinho".
+//
+// Enquanto esta marca vale, OK nao escolhe nada aqui. Ela cai no primeiro
+// KEYUP de OK — ou seja, exige um toque NOVO, que e o que o dono espera.
+static volatile int esperandoSoltura;
+static Uint32 holdDesde;
+
+static int teclaOk(SDL_Keycode k) {
+  return k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE;
+}
+
+// A home e quem conhece o item focado, por isso ela continua decidindo qual
+// indice entregar a ctx_abrir no KEYUP. Este observador fornece o feedback
+// durante a retenção e arma a janela longa; setas/Voltar invalidam o gesto
+// antes que a home possa transformá-lo em ação.
+static int observarHold(void *u, SDL_Event *e) {
+  (void)u;
+  if (e->type == SDL_KEYDOWN) {
+    SDL_Keycode k = e->key.keysym.sym;
+    if (teclaOk(k) && !e->key.repeat) {
+      holdAtivo = 1;
+      holdCancelado = 0;
+      holdPronto = 0;
+      holdDesde = SDL_GetTicks();
+    } else if (holdAtivo &&
+               (k == SDLK_UP || k == SDLK_DOWN || k == SDLK_LEFT ||
+                k == SDLK_RIGHT || k == SDLK_AC_BACK || k == SDLK_ESCAPE ||
+                k == SDLK_BACKSPACE || e->key.keysym.scancode == NV_SCANCODE_BACK)) {
+      holdCancelado = 1;
+    }
+  } else if (e->type == SDL_KEYUP && teclaOk(e->key.keysym.sym)) {
+    if (holdAtivo && !holdCancelado && SDL_GetTicks() - holdDesde >= NV_HOLD_MS)
+      holdPronto = 1;
+    holdAtivo = 0;
+    esperandoSoltura = 0;
+  }
+  return 0;
+}
+
+// QUATRO: detalhes, salvar, assistido (so em filme/serie) e tirar de
+// Continuar assistindo (so em item com progresso).
+//
+// ERA TRES, E O QUARTO EXISTIA MESMO ASSIM. Em filme com progresso as quatro
+// condicoes valem ao mesmo tempo e montar() escrevia em ops[3] — fora do
+// vetor. O sintoma que chegou (issue #36) foi o mais brando dos possiveis:
+// focoAnim so era animado ate CTX_MAX, entao a ultima linha do menu NUNCA
+// acendia ("doesn't go white to show it is selected"). O desenho ia ate nOps e
+// lia focoAnim[3], que ninguem escrevia.
+//
+// A opcao de Continuar assistindo entrou depois das outras tres, e o teto
+// ficou onde estava. Por isso o append agora passa por juntar(), que confere o
+// teto num lugar so: uma quinta opcao deixa de aparecer, em vez de corromper
+// memoria.
+#define CTX_MAX 4
+static struct { const char *rot; int acao; } ops[CTX_MAX];
+static int nOps;
+static float focoAnim[CTX_MAX];
+static int holdObservador;
+enum { OP_DETALHES, OP_LISTA, OP_ASSISTIDO, OP_TIRAR_CONTINUAR };
+
+static int indiceAtual(void) {
+  int n = cat_n();
+  int achado;
+  if (n < 1 || idx < 0 || idx >= n) return -1;
+  if (operacaoImdb[0]) {
+    achado = cat_indice_por_imdb(operacaoImdb);
+    // A resposta pode chegar depois de a descoberta trocar o bloco. Nunca
+    // reutilizar `idx` nesse caso, pois ele pode ser outro titulo.
+    return achado;
+  }
+  return idx;
+}
+
+// O UNICO CAMINHO PARA DENTRO DE ops[]. Ver a nota em CTX_MAX.
+static void juntar(const char *rot, int acao) {
+  if (nOps >= CTX_MAX) return;
+  ops[nOps].rot = rot; ops[nOps].acao = acao; nOps++;
+}
+
+static void montar(void) {
+  int i = indiceAtual();
+  const CatItem *ci = i >= 0 ? cat_item(i) : NULL;
+  nOps = 0;
+  if (!ci) return;
+  juntar("Ver detalhes", OP_DETALHES);
+  // Sem IMDb nao ha endpoint remoto suportado para esta acao. Nao oferecer
+  // um botao que so aparentaria funcionar e inventaria estado local.
+  if (ci->imdb[0]) {
+    // O MESMO VERBO DO PAINEL E DO BOTAO "+". Estava "Adicionar à biblioteca",
+    // e "Biblioteca" e o nome de uma TELA — a pessoa lia o rotulo, ia ate a
+    // tela Biblioteca e nao encontrava relacao com o "+" que tinha apertado no
+    // detalhe. Agora as tres portas da mesma acao (o "+", esta linha e o painel
+    // da tecla AZUL) usam a palavra "salvar", e todas escrevem no mesmo lugar.
+    juntar(estadoOperacao == CTX_PENDENTE && operacao == CTX_OP_LISTA
+             ? (intencao ? "Salvando..." : "Removendo dos Salvos...")
+             : (ci->naLista ? "Remover dos Salvos" : "Salvar"),
+           OP_LISTA);
+  }
+  // O web so oferece "assistido" em filme e serie — nao em canal nem evento,
+  // que sao tipos que os addons do dono tambem declaram.
+  if (ci->imdb[0] && (!strcmp(ci->tipo, "movie") || !strcmp(ci->tipo, "series"))) {
+    juntar(estadoOperacao == CTX_PENDENTE && operacao == CTX_OP_HISTORICO
+             ? (intencao ? "Marcando como assistido..."
+                         : "Desmarcando como assistido...")
+             : (cat_historico_estado_item(i) == 1 ? "Desmarcar como assistido"
+                                                  : "Marcar como assistido"),
+           OP_ASSISTIDO);
+  }
+  // TIRAR DE "CONTINUAR ASSISTINDO".
+  //
+  // So aparece em item que TEM progresso — e o unico caso em que a acao quer
+  // dizer alguma coisa, e oferecer em todo card poluiria o menu com um botao
+  // que nao faz nada. `progresso` e o campo que a home usa para decidir se
+  // desenha a barra, entao a condicao aqui e a mesma que poe o item na fileira.
+  //
+  // Distinta de "marcar como assistido": aquela e historico no Trakt e vale
+  // para o titulo; esta apaga a POSICAO DE RETOMADA local, que e o que faz o
+  // card aparecer na fileira. Quem terminou um filme quer as duas; quem
+  // desistiu no meio quer so esta.
+  if (ci->progresso > 0 && ci->imdb[0]) {
+    juntar("Tirar de Continuar assistindo", OP_TIRAR_CONTINUAR);
+  }
+  // O FOCO TEM DE CABER NA LISTA QUE ACABOU DE SER MONTADA.
+  //
+  // montar() roda de novo a cada confirmacao, e a lista ENCOLHE em casos
+  // reais: marcar como assistido apaga a posicao de retomada, e com isso
+  // "Tirar de Continuar assistindo" deixa de existir. Se o foco estava nela,
+  // `foco` passa a apontar para fora — e ai o desenho nao pinta linha nenhuma
+  // ali (o laco vai ate nOps) e aplicar() sai cedo em `foco >= nOps`. Na TV
+  // isso e exatamente "ele pula e nao faz nada".
+  if (foco >= nOps) foco = nOps > 0 ? nOps - 1 : 0;
+  if (foco < 0) foco = 0;
+}
+
+void ctx_abrir(int indice) {
+  if (holdCancelado) {
+    holdCancelado = 0;
+    holdPronto = 0;
+    return;
+  }
+  if (indice < 0 || indice >= cat_n() || !cat_item(indice)) return;
+  // A longa ja consumiu o gesto na home. Limpar a sentinela aqui evita que o
+  // KEYUP seguinte seja reaproveitado como uma selecao dentro da modal.
+  holdPronto = 0;
+  esperandoSoltura = 1;   // o OK que abriu ainda esta afundado; ver a nota acima
+  idx = indice; foco = 0; aberto = 1; pedDetalhes = -1;
+  operacao = CTX_OP_NENHUMA; intencao = 0; estadoOperacao = 0;
+  espelhoAplicado = 0;
+  operacaoImdb[0] = 0;
+  memset(focoAnim, 0, sizeof focoAnim);
+  montar();
+}
+
+int ctx_aberto(void) { return aberto; }
+int ctx_pediu_detalhes(void) { int v = pedDetalhes; pedDetalhes = -1; return v; }
+
+static void aplicar(void) {
+  int atual = indiceAtual();
+  const CatItem *ci = atual >= 0 ? cat_item(atual) : NULL;
+  int acao;
+  if (!ci || foco < 0 || foco >= nOps) return;
+  acao = ops[foco].acao;
+  // SO A ESPERA BLOQUEIA, e nao "ja houve uma operacao".
+  //
+  // A guarda antiga era `operacao != CTX_OP_NENHUMA && estado != FALHA`, e
+  // como `operacao` nunca volta a NENHUMA enquanto o modal esta aberto, a
+  // PRIMEIRA acao confirmada trancava todas as outras: depois de adicionar a
+  // biblioteca, "Desmarcar como assistido" no mesmo modal simplesmente nao
+  // fazia nada. Era preciso fechar e reabrir, e ninguem adivinha isso.
+  //
+  // Enquanto a requisicao esta no ar continua valendo esperar: duas escritas
+  // simultaneas na mesma superficie e que nao podem acontecer.
+  if (acao != OP_DETALHES && estadoOperacao == CTX_PENDENTE) return;
+  switch (acao) {
+    case OP_DETALHES: pedDetalhes = idx; break;
+    case OP_LISTA:
+      // Captura a intencao ANTES de qualquer escrita. O mesmo valor segue para
+      // o POST e so chega ao espelho local depois de uma resposta 2xx.
+      intencao = !ci->naLista;
+      snprintf(operacaoImdb, sizeof operacaoImdb, "%s", ci->imdb);
+      operacao = CTX_OP_LISTA;
+      espelhoAplicado = 0;
+      estadoOperacao = CTX_PENDENTE;
+      // LOCAL PRIMEIRO E SEMPRE. E sincrono e nao pode falhar por rede, entao
+      // acontece fora do jogo de estados abaixo; ver salvos.h para por que ele
+      // e o unico destino que sobrevive ao fechamento do app.
+      salvos_definir(ci, intencao);
+      if (ajustes_salvos_no_trakt()) {
+        if (!trakt_watchlist_tipo(ci->imdb, ci->tipo, intencao))
+          estadoOperacao = CTX_FALHA;
+      } else {
+        // SEM TRAKT NAO HA O QUE ESPERAR, e deixar CTX_PENDENTE aqui seria um
+        // modal travado para sempre: ctx_atualizar so sai da espera consultando
+        // trakt_operacao_estado, e nenhuma operacao foi aberta la. A escrita
+        // local ja terminou, entao o estado correto e "confirmada" — e e ele
+        // que faz o espelho (cat_definir_na_lista) rodar no proximo quadro.
+        estadoOperacao = CTX_CONFIRMADA;
+        espelhoAplicado = 1;
+        cat_definir_na_lista(atual, intencao);
+        desc_remontar_fileiras();
+      }
+      montar();
+      break;
+    case OP_ASSISTIDO:
+      // Progresso e posicao de retomada, nao historico. So um retrato de
+      // historico confirmado pode inverter a acao para "desmarcar".
+      intencao = cat_historico_estado_item(atual) == 1 ? 0 : 1;
+      snprintf(operacaoImdb, sizeof operacaoImdb, "%s", ci->imdb);
+      operacao = CTX_OP_HISTORICO;
+      espelhoAplicado = 0;
+      estadoOperacao = CTX_PENDENTE;
+      if (!trakt_assistido_tipo(ci->imdb, ci->tipo, intencao))
+        estadoOperacao = CTX_FALHA;
+      montar();
+      break;
+    case OP_TIRAR_CONTINUAR: {
+      // A chave e montada do mesmo jeito que progresso.c monta ao gravar —
+      // com temporada e episodio quando ha —, senao a linha apagada seria
+      // outra e o card continuaria na fileira.
+      char chave[192];
+      prog_chave(chave, sizeof chave, ci->imdb, ci->temporada, ci->episodio);
+      prog_remover(chave);
+      // AS TRES FONTES, e nao so a local — issue #22.
+      //
+      // A fileira de retomada e a fusao de tres coisas: o registro local, o
+      // /sync/playback do Trakt e o progresso da conta Nuvio. Apagar so a
+      // local fazia a entrada voltar no ciclo seguinte, vinda de qualquer uma
+      // das outras duas: "seleciono remover, o prompt some e nada e removido...
+      // nao consigo remover".
+      //
+      // Nenhuma das duas remotas e obrigatoria: quem nao tem Trakt nao tem id
+      // de playback, quem nao tem conta nao tem RPC. As duas dizem no log o que
+      // fizeram, e a local acontece de qualquer jeito.
+      trakt_playback_remover(ci->imdb);
+      syncprog_remover(chave);
+      // Efeito local e imediato: sem zerar o campo, o card so sairia da fileira
+      // na proxima remontagem do catalogo, e para quem apertou parece que nada
+      // aconteceu.
+      cat_zerar_progresso(atual);
+      // E TIRA O CARD DA FILEIRA, que zerar o progresso nao faz: sem isto ele
+      // fica ali sem barra de progresso ate a proxima remontagem do catalogo, e
+      // o relator do #22 via a remocao so depois de fechar e reabrir o app.
+      cat_tirar_item_da_fileira(atual);
+      aberto = 0;
+      break;
+    }
+  }
+  if (acao == OP_DETALHES) aberto = 0;
+}
+
+void ctx_evento(const SDL_Event *e) {
+  int k;
+  if (!aberto) return;
+  // A SOLTURA VEM POR AQUI TAMBEM, e nao so pelo SDL_AddEventWatch de
+  // observarHold: com o modal aberto, app.c entrega o evento a esta funcao e
+  // nao ha garantia de que o watch tenha visto o mesmo KEYUP (as teclas
+  // injetadas de /tmp/nuvio-key, por exemplo, nao passam pela fila do SDL).
+  // Sem esta linha a marca nunca cairia por esse caminho e o modal ficaria
+  // surdo ao OK.
+  if (e->type == SDL_KEYUP && teclaOk(e->key.keysym.sym)) esperandoSoltura = 0;
+  if (e->type != SDL_KEYDOWN) return;
+  k = e->key.keysym.sym;
+  // Repeticao automatica NUNCA e uma segunda escolha: quem quer clicar duas
+  // vezes solta e aperta de novo.
+  if (e->key.repeat && teclaOk(k)) return;
+  if (esperandoSoltura && teclaOk(k)) return;
+  if (k == SDLK_AC_BACK || k == SDLK_ESCAPE || k == SDLK_BACKSPACE ||
+      e->key.keysym.scancode == NV_SCANCODE_BACK) { aberto = 0; return; }
+  // Enquanto a requisicao esta no ar, OK nao repete a escrita. O foco continua
+  // sendo o do modal e Voltar sempre pode cancelar a espera visual.
+  //
+  // DEPOIS que ela termina, o OK volta a ser OK. Antes ele virava "fechar" —
+  // o modal ficava com os botoes na tela, respondendo ao foco, e o unico
+  // efeito de aperta-los era sumir. Somado a guarda de aplicar() logo acima,
+  // era a metade visivel do "nao faz nada" no botao de desmarcar.
+  if (operacao != CTX_OP_NENHUMA && estadoOperacao == CTX_PENDENTE) return;
+  if (k == SDLK_UP)   { if (foco > 0) foco--; return; }
+  if (k == SDLK_DOWN) { if (foco + 1 < nOps) foco++; return; }
+  if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { aplicar(); return; }
+}
+
+void ctx_atualizar(float dt, Uint32 agora) {
+  int i;
+  int atual;
+  if (!holdObservador) {
+    SDL_AddEventWatch(observarHold, NULL);
+    holdObservador = 1;
+  }
+  if (holdAtivo && agora - holdDesde >= NV_HOLD_MS) holdPronto = 1;
+  if (ajustes_animacoes_reduzidas())
+    anim = aberto ? 1.0f : 0.0f;
+  else
+    anim = anim_mola(anim, aberto ? 1.0f : 0.0f, dt, NV_MOLA_TELA);
+  for (i = 0; i < CTX_MAX; i++)
+    focoAnim[i] = ajustes_animacoes_reduzidas()
+      ? (aberto && foco == i ? 1.0f : 0.0f)
+      : anim_mola(focoAnim[i], aberto && foco == i ? 1.0f : 0.0f,
+                  dt, NV_MOLA_FOCO);
+
+  atual = indiceAtual();
+  if (aberto && atual < 0) { aberto = 0; return; }
+
+  if (operacao != CTX_OP_NENHUMA && estadoOperacao == CTX_PENDENTE) {
+    int novo = trakt_operacao_estado(operacao);
+    if (novo == CTX_CONFIRMADA || novo == CTX_FALHA) {
+      estadoOperacao = novo;
+      if (!espelhoAplicado && atual >= 0) {
+        const CatItem *ci = cat_item(atual);
+        if (ci && novo == CTX_CONFIRMADA) {
+          if (operacao == CTX_OP_LISTA) {
+            cat_definir_na_lista(atual, intencao);
+          } else {
+            cat_historico_definir_id(ci->imdb, ci->tipo, intencao);
+            // MARCAR COMO ASSISTIDO APAGA A POSICAO DE RETOMADA.
+            //
+            // cat_historico_definir_id so escreve numa tabela lateral de
+            // historico, e a fileira "Continuar assistindo" nao le dela: ela
+            // le progresso/restanteMin/temporada/episodio do proprio item. Sem
+            // isto o card continuava ali com a barra cheia depois de o titulo
+            // ter sido marcado como visto — o "removo do watch e o card nao
+            // sai" do relato.
+            //
+            // E o MESMO par que "Tirar de Continuar assistindo" faz logo
+            // abaixo, e pelo mesmo motivo: quem terminou nao tem o que
+            // retomar. So na direcao "assistido"; desmarcar nao inventa uma
+            // posicao que ninguem gravou.
+            if (intencao) {
+              char chave[192];
+              prog_chave(chave, sizeof chave, ci->imdb, ci->temporada, ci->episodio);
+              prog_remover(chave);
+              // As mesmas tres fontes de "Tirar de Continuar assistindo": quem
+              // marcou como visto tambem nao quer o card de retomada de volta
+              // no proximo ciclo.
+              trakt_playback_remover(ci->imdb);
+              syncprog_remover(chave);
+              cat_zerar_progresso(atual);
+            }
+          }
+        }
+        espelhoAplicado = 1;
+        // A HOME TEM DE MUDAR NA HORA.
+        //
+        // cat_historico_definir_id so mexe na tabela lateral de historico, e
+        // nenhuma fileira le dela: quem monta as fileiras e a descoberta, a
+        // partir do que o Trakt respondeu. Sem este pedido a mudanca so
+        // aparecia no ciclo seguinte — o "tiro de assistido e a home nao da
+        // refresh, tenho que sair e voltar" do relato.
+        //
+        // desc_remontar_fileiras remonta SEM REDE, a partir do que ja esta em
+        // memoria; e a mesma porta que a mudanca de limite de fileiras usa.
+        desc_remontar_fileiras();
+        montar();
+      }
+    }
+  }
+}
+
+void ctx_desenhar(Uint32 agora) {
+  const CatItem *ci;
+  const char *estados[2];
+  const char *mensagem = NULL;
+  float a = anim, alt, x, y;
+  int i, nEstados = 1;
+  (void)agora;
+  if (!aberto && holdAtivo) {
+    float p = (float)(SDL_GetTicks() - holdDesde) / (float)NV_HOLD_MS;
+    TxtLinha t;
+    if (p > 1.0f) p = 1.0f;
+    t = txt_linha(TXT_CAPTION2,
+                  p >= 1.0f ? "Solte para abrir opções" : "Segure OK para opções",
+                  220, 224, 232, 255);
+    txt_desenhar_alpha(t, (NV_TELA_W - t.w) * 0.5f, NV_TELA_H - 124.0f, 0.94f);
+    gfx_cor((GfxRect){ (NV_TELA_W - 420.0f) * 0.5f, NV_TELA_H - 82.0f,
+                       420.0f, 8.0f }, 4.0f, 0.18f, 0.2f, 0.23f, 0.96f);
+    gfx_cor((GfxRect){ (NV_TELA_W - 420.0f) * 0.5f, NV_TELA_H - 82.0f,
+                       420.0f * p, 8.0f }, 4.0f, 0.78f, 0.84f, 0.96f, 0.98f);
+  }
+  if (a < 0.01f) return;
+  ci = indiceAtual() >= 0 ? cat_item(indiceAtual()) : NULL;
+  if (!ci) return;
+
+  if (estadoOperacao == CTX_PENDENTE)
+    mensagem = operacao == CTX_OP_LISTA ? "Atualizando biblioteca..."
+                                        : (intencao ? "Marcando como assistido..."
+                                                    : "Desmarcando como assistido...");
+  else if (estadoOperacao == CTX_CONFIRMADA)
+    mensagem = operacao == CTX_OP_LISTA ? "Biblioteca atualizada"
+                                        : (intencao ? "Marcado como assistido"
+                                                    : "Desmarcado como assistido");
+  else if (estadoOperacao == CTX_FALHA)
+    mensagem = "Não foi possível atualizar. Tente novamente.";
+
+  estados[0] = ci->naLista ? "Na biblioteca" : "Fora da biblioteca";
+  if (!strcmp(ci->tipo, "movie") || !strcmp(ci->tipo, "series")) {
+    { int historico = cat_historico_estado_item(indiceAtual());
+      estados[1] = historico == 1 ? "Assistido"
+                   : historico == 0 ? "Não assistido"
+                   : ci->progresso > 0 ? "Progresso salvo"
+                   : "Histórico não consultado"; }
+    nEstados = 2;
+  }
+
+  { GfxRect tela = { 0, 0, NV_TELA_W, NV_TELA_H };
+    gfx_cor(tela, 0.0f, 0, 0, 0, 0.72f * a); }
+
+  alt = CTX_PAD * 2.0f + CTX_CAB +
+        (float)nOps * (CTX_LINHA + CTX_GAP) - CTX_GAP + CTX_RODAPE;
+  x = (NV_TELA_W - CTX_W) * 0.5f;
+  y = (NV_TELA_H - alt) * 0.5f;
+  // Sobe do fundo enquanto aparece, como as outras folhas do app.
+  y += (1.0f - a) * 40.0f;
+
+  { GfxRect p = { x, y, CTX_W, alt };
+    gfx_cor(p, 0.06f, 0.11f, 0.11f, 0.13f, 0.98f * a); }
+
+  { TxtLinha t = txt_linha(TXT_CAPTION2, "TÍTULO SELECIONADO", 174, 178, 188, 255);
+    txt_desenhar_alpha(t, x + CTX_PAD, y + CTX_PAD, a * 0.95f); }
+  { TxtLinha t = txt_linha_corta(TXT_HEADLINE, ci->titulo, 245, 248, 255, 255,
+                                 CTX_W - CTX_PAD * 2.0f);
+    txt_desenhar_alpha(t, x + CTX_PAD, y + CTX_PAD + 28.0f, a); }
+  { const char *subtitulo = mensagem ? mensagem : "Opções do título";
+    TxtLinha t = txt_linha(TXT_DET_META2, subtitulo, 150, 154, 163, 255);
+    txt_desenhar_alpha(t, x + CTX_PAD, y + CTX_PAD + 70.0f, a * 0.9f); }
+
+  { float sx = x + CTX_PAD;
+    float sy = y + CTX_PAD + 104.0f;
+    for (i = 0; i < nEstados; i++) {
+      TxtLinha t = txt_linha(TXT_CAPTION2, estados[i], 215, 218, 225, 255);
+      float sw = t.w + 24.0f;
+      gfx_cor((GfxRect){ sx, sy, sw, CTX_STATUS_H }, 0.5f,
+              0.16f, 0.17f, 0.19f, 0.96f * a);
+      txt_desenhar_alpha(t, sx + 12.0f,
+                         sy + (CTX_STATUS_H - t.h) * 0.5f, a);
+      sx += sw + CTX_GAP;
+    } }
+
+  for (i = 0; i < nOps; i++) {
+    float by = y + CTX_PAD + CTX_CAB + (float)i * (CTX_LINHA + CTX_GAP);
+    GfxRect r = { x + CTX_PAD, by, CTX_W - CTX_PAD * 2.0f, CTX_LINHA };
+    float f = focoAnim[i];
+    // Mesma linguagem das pilulas: o focado INVERTE (fundo claro, texto
+    // escuro), em vez de anel branco sobre preenchimento claro.
+    float lum = anim_mistura(0.176f, 0.961f, f);
+    // A COR DO TEXTO VIRA COM O FUNDO — MAS EM DEGRAU, e nao interpolada.
+    //
+    // O defeito original: o fundo da pilula e animado (escuro -> claro conforme
+    // `f`), e o texto trocava de claro para escuro no instante em que `foco`
+    // mudava. Nos ~200 ms da mola isso dava texto escuro sobre fundo escuro na
+    // linha que ganhou o foco, e claro sobre claro na que perdeu. Nos dois
+    // casos o texto some — o "quando seguro o botao ele apaga o texto".
+    //
+    // A PRIMEIRA CORRECAO INTERPOLOU A COR, E FOI PIOR. A cor faz parte da
+    // CHAVE DO CACHE de linhas (text.c:563), entao uma cor por quadro criava
+    // uma entrada, uma rasterizacao TTF e uma textura GL por quadro. Estourado
+    // o orcamento de rasterizacao por quadro, linhaFamilia devolve linha vazia
+    // — e a linha simplesmente NAO E DESENHADA. Na foto do dono a opcao em
+    // foco saiu fantasma e a de baixo saiu em branco.
+    //
+    // Duas chaves por rotulo, e o degrau cai em f=0,5, onde o fundo esta em
+    // 0,57 de luminancia: ali as duas cores sao legiveis, entao a troca nao
+    // tem instante ruim.
+    int cor = f >= 0.5f ? 17 : 240;
+    gfx_cor(r, 14.0f / CTX_LINHA, lum, lum, lum, a);
+    { TxtLinha t = txt_linha(TXT_PLR_CORPO, ops[i].rot, cor, cor, cor, 255);
+      txt_desenhar_alpha(t, r.x + 44.0f,
+                         by + (CTX_LINHA - t.h) * 0.5f, a); }
+    if (f > 0.02f) {
+      TxtLinha seta = txt_linha(TXT_CAPTION2, "▸", cor, cor, cor, 255);
+      txt_desenhar_alpha(seta, r.x + 16.0f,
+                         by + (CTX_LINHA - seta.h) * 0.5f, a * f);
+    }
+  }
+
+  { const char *rodape = estadoOperacao == CTX_PENDENTE
+                           ? "Voltar Fechar   Aguarde..."
+                           : operacao != CTX_OP_NENHUMA
+                           ? "↑ ↓ Navegar   OK Fechar   Voltar Fechar"
+                           : "↑ ↓ Navegar   OK Selecionar   Voltar Fechar";
+    TxtLinha t = txt_linha(TXT_CAPTION2, rodape,
+                           155, 159, 169, 255);
+    txt_desenhar_alpha(t, x + CTX_PAD,
+                       y + alt - CTX_PAD - t.h, a * 0.86f); }
+}

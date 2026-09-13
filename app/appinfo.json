@@ -1,0 +1,23 @@
+{
+  "id": "com.sunplay.native",
+  "version": "1.0.0",
+  "vendor": "SunPlay",
+  "type": "web",
+  "main": "index.html",
+  "title": "SunPlay Native",
+  "icon": "icons/icon-small.png",
+  "largeIcon": "icons/icon-large.png",
+  "iconColor": "#1a1a2e",
+  "bgColor": "#0a0a1a",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "handlesRelaunch": true,
+  "requiredPermissions": [
+    "all"
+  ],
+  "requiredACG": [],
+  "requiredFeatures": [
+    "screen.size.all"
+  ],
+  "appDescription": "SunPlay Native - High Performance Zero-Copy Media Player for webOS."
+}

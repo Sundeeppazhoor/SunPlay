@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920,height=1080,user-scalable=no">
+<title>Nuvio</title>
+<style>
+  /* Fundo TRANSPARENTE de propriedade, nao por descuido. O AVPlay desenha num
+     plano de hardware ATRAS da pagina; o que se ve dele e exatamente o que a
+     pagina deixa passar. Um `background: #000` aqui apagaria o video inteiro e
+     o sintoma seria uma tela preta com a interface por cima — o mesmo defeito
+     que o app ja resolveu uma vez no webOS. */
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%;
+               overflow: hidden; background: transparent; }
+  /* O objeto do AVPlay ocupa a tela toda e fica na camada de baixo. Quem
+     recorta a area do video e o proprio AVPlay (setDisplayRect), nao o CSS. */
+  /* PAINEL DE DIAGNOSTICO NA TELA. Na TV nao ha DevTools a mao e o sintoma de
+     falha e TELA PRETA, que nao diz nada. Este painel transforma a tela preta
+     em texto que da para fotografar. Some sozinho quando o app desenha o
+     primeiro quadro; se nao sumir, o que estiver escrito nele E o defeito. */
+  #diag { position: absolute; left: 2%; top: 2%; right: 2%; z-index: 5;
+          font: 18px/1.45 monospace; color: #b8f5c0; white-space: pre-wrap;
+          background: rgba(0,0,0,.82); padding: 14px 18px; border-radius: 8px;
+          max-height: 92%; overflow: hidden; }
+  #diag .e { color: #ff8b7a; }
+  #avPlayerObject { position: absolute; inset: 0; width: 100%; height: 100%;
+                    z-index: 0; }
+  /* O BUFFER de desenho continua 1920x1080 (atributos width/height do
+     elemento); o que muda aqui e o TAMANHO EM TELA. Na TV os dois coincidem e
+     nada disto tem efeito. No desktop a janela e menor que 1920x1080, e sem
+     isto o navegador mostra o CANTO SUPERIOR ESQUERDO do canvas e corta o
+     resto — parece que o app desenhou errado, e ele desenhou certo.
+
+     !important porque o SDL escreve style.width/height no elemento ao criar a
+     janela; regra de folha de estilo com !important ganha do inline.
+
+     As quatro medidas juntas mantem 16:9 e cabem na janela: largura cheia
+     limitada pela altura, ou altura cheia limitada pela largura. */
+  #canvas { position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100vw !important; height: 56.25vw !important;
+            max-width: 177.78vh !important; max-height: 100vh !important;
+            z-index: 1; display: block; background: transparent;
+            outline: none; }
+</style>
+</head>
+<body>
+<!-- O AVPlay so existe se este objeto existir. Nao e decorativo: `webapis.avplay`
+     falha sem ele em varios firmwares. -->
+<object id="avPlayerObject" type="application/avplayer"></object>
+<div id="diag">Nuvio: iniciando…</div>
+<canvas id="canvas" width="1920" height="1080" tabindex="0"
+        oncontextmenu="event.preventDefault()"></canvas>
+<script>
+  // DIAGNOSTICO DE ARRANQUE, e ele sai ANTES de qualquer coisa do app.
+  //
+  // Na TV nao ha DevTools a mao, mas `sdb dlog` carrega o console. Quando o app
+  // da TELA PRETA nao ha nenhuma outra pista, e sem estas linhas a unica coisa
+  // que se sabe e "nao apareceu". Cada uma responde uma pergunta que ja custou
+  // rodada neste port:
+  //
+  //  - crossOriginIsolated / SharedArrayBuffer: os ~40 pthread_create do app
+  //    exigem SAB. No desktop eu sirvo com COOP/COEP; dentro de um .wgt NAO HA
+  //    CABECALHO HTTP NENHUM. Sem isolamento os workers nao sobem, o runtime
+  //    fica preso em "still waiting on run dependencies: loading-workers", e o
+  //    sintoma e exatamente tela preta depois de 100%.
+  //  - WebGL: o Chromium da TV e mais velho que o do desktop. Contexto recusado
+  //    ou shader que nao compila tambem da tela preta com o app "rodando".
+  //  - avplay: diz se o plano de video existe neste firmware.
+  (function () {
+    // ENVIO DO LOG PARA UM COLETOR, quando houver um.
+    //
+    // A investigacao inteira deste port foi feita por FOTO DA TELA DA TV, e
+    // isso custou rodadas: o painel guarda 34 linhas, o comeco rola, e cada
+    // pergunta nova exigia outra viagem ate o aparelho. O log completo sempre
+    // esteve no console — o que faltava era ele sair de la sozinho.
+    //
+    // DESLIGADO por padrao, e de proposito: so envia quando a build foi feita
+    // com NUVIO_LOG_URL apontando para uma maquina que o dono escolheu. Log de
+    // app carrega nome de titulo assistido e URL de fonte; nao e coisa para
+    // sair da casa de alguem sem que a pessoa tenha pedido.
+    //
+    // Em lote de 2 s e com keepalive: uma requisicao por linha afogaria a TV, e
+    // sem keepalive o ultimo lote — justamente o do travamento — se perde.
+    var COLETOR = "@NUVIO_LOG_URL@";
+    var fila = [];
+    if (COLETOR && COLETOR.charAt(0) !== "@") {
+      setInterval(function () {
+        if (!fila.length) return;
+        var corpo = fila.join("\n");
+        fila = [];
+        try {
+          fetch(COLETOR, { method: "POST", body: corpo, keepalive: true,
+                           headers: { "Content-Type": "text/plain" } });
+        } catch (e) {}
+      }, 2000);
+      // O lote pendente na saida: sem isto o log para uma linha antes do que
+      // interessa quando o app morre ou e fechado.
+      addEventListener("pagehide", function () {
+        if (!fila.length) return;
+        try { navigator.sendBeacon(COLETOR, fila.join("\n")); } catch (e) {}
+      });
+    }
+    window.__nvEnviar = function (t) {
+      if (!COLETOR || COLETOR.charAt(0) === "@") return;
+      fila.push(t);
+      if (fila.length > 400) fila.splice(0, fila.length - 400);
+    };
+
+    var painel = document.getElementById("diag");
+    var linhas = [];
+    // A MESMA lista, em TEXTO PURO e sem o relogio formatado em HTML. Ela existe
+    // para o painel de log EM C (src/registro.c) poder ler daqui: no webOS esse
+    // painel le o fim de /tmp/nuvio.log, e aqui nao ha arquivo nenhum — o printf
+    // do app chega em Module.print, passa por `mostrar` e morreria dentro deste
+    // fechamento. Uma unica captura alimentando as duas formas de mostrar; um
+    // segundo mecanismo de coleta daria dois logs que discordam.
+    var nvLinhas = [];
+    window.__nvLinhas = nvLinhas;
+    function pintar() {
+      if (painel && !painel.hidden) painel.innerHTML = linhas.join("\n");
+    }
+    // Exposto porque quem mostra o painel de novo (o ouvinte da tecla, la
+    // embaixo) esta fora deste fechamento e precisa repintar o que chegou
+    // enquanto ele estava escondido.
+    window.__nvPintar = pintar;
+    // RELOGIO EM CADA LINHA. Sem ele, duas fotos do painel em pontos
+    // diferentes nao distinguem "travou" de "esta andando devagar" — e foi
+    // exatamente essa duvida que custou uma ida a TV: a primeira foto parava
+    // numa linha, a segunda duas linhas adiante, e as duas leituras eram
+    // compativeis com os dois diagnosticos.
+    var t0 = Date.now();
+    function mostrar(txt, erro) {
+      var ms = Date.now() - t0;
+      if (window.__nvEnviar) window.__nvEnviar((ms / 1000).toFixed(1) + "s " + txt);
+      txt = (ms / 1000).toFixed(1).padStart(6) + "s  " + txt;
+      // A copia em texto puro guarda MAIS que as 34 do painel DOM: o painel em C
+      // rola, entao la o historico serve para algo. 200 e o tamanho do anel do
+      // outro lado (REG_MAX em src/registro.c) — guardar mais aqui seria memoria
+      // que ninguem le.
+      nvLinhas.push(txt);
+      if (nvLinhas.length > 200) nvLinhas.splice(0, nvLinhas.length - 200);
+      linhas.push(erro ? '<span class="e">' + txt + "</span>" : txt);
+      // So as ultimas 34 linhas: a tela da TV nao tem mais que isso e o que
+      // importa e o FIM, onde o arranque parou.
+      if (linhas.length > 34) linhas = linhas.slice(-34);
+      // SO PINTA QUANDO ESTA VISIVEL. A versao anterior reescrevia o innerHTML a
+      // CADA linha de log, inclusive depois de o painel ficar escondido no
+      // primeiro quadro — ou seja, um reflow do DOM por printf, para sempre, sem
+      // ninguem olhando. O app fala centenas de linhas por minuto.
+      pintar();
+    }
+    window.__nvDiag = mostrar;
+    function d(k, v) { console.log("[NV-DIAG] " + k + " = " + v); mostrar(k + " = " + v); }
+    try {
+      d("userAgent", navigator.userAgent);
+      d("crossOriginIsolated", (typeof crossOriginIsolated !== "undefined") ? crossOriginIsolated : "indefinido");
+      d("SharedArrayBuffer", typeof SharedArrayBuffer);
+      d("hardwareConcurrency", navigator.hardwareConcurrency);
+      d("WebAssembly", typeof WebAssembly);
+      d("tela", screen.width + "x" + screen.height +
+               " / viewport " + window.innerWidth + "x" + window.innerHeight +
+               " / dpr " + window.devicePixelRatio);
+      d("avplay", (typeof webapis !== "undefined" && webapis && webapis.avplay) ? "presente" : "AUSENTE");
+      var cv = document.createElement("canvas");
+      var gl = cv.getContext("webgl", { alpha: true }) || cv.getContext("experimental-webgl", { alpha: true });
+      if (!gl) { d("WebGL", "CONTEXTO RECUSADO"); }
+      else {
+        d("WebGL", gl.getParameter(gl.VERSION));
+        d("WebGL/GLSL", gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+        d("WebGL/tamanho-max-textura", gl.getParameter(gl.MAX_TEXTURE_SIZE));
+        var a = gl.getContextAttributes && gl.getContextAttributes();
+        d("WebGL/alpha", a ? a.alpha : "?");
+        d("WebGL/npot", !!gl.getExtension("OES_texture_npot"));
+      }
+    } catch (e) { console.log("[NV-DIAG] falhou: " + e); }
+
+    // Erro nao capturado vira linha de log. Sem isto uma excecao no arranque
+    // some e so sobra a tela preta.
+    window.addEventListener("error", function (ev) {
+      var t = "ERRO: " + (ev.message || ev.type) +
+              " @ " + (ev.filename || "?") + ":" + (ev.lineno || 0);
+      console.log("[NV-ERRO] " + t); mostrar(t, 1);
+    });
+    window.addEventListener("unhandledrejection", function (ev) {
+      var t2 = "ERRO promessa: " + (ev.reason && ev.reason.message ? ev.reason.message : ev.reason);
+      console.log("[NV-ERRO] " + t2); mostrar(t2, 1);
+    });
+  })();
+
+  var Module = {
+    // argv[1] e a pasta de arte. main() deriva fonts/ dela derrubando o ultimo
+    // componente, entao /app/art => /app/fonts, que e onde o --preload-file
+    // monta as fontes.
+    arguments: ["/app/art"],
+    canvas: (function () { return document.getElementById("canvas"); })(),
+    print: function (t) {
+      console.log(t);
+      // O painel morre no primeiro quadro: dai em diante o app fala por si.
+      if (window.__nvDiag) {
+        window.__nvDiag(t);
+        // ESCONDE, NAO REMOVE. A primeira versao arrancava o painel do DOM no
+        // primeiro quadro, e isso deixou a sessao CEGA justamente quando o app
+        // passou a arrancar e a travar mais adiante, na tela de login: nao havia
+        // mais onde ler nada. O painel continua recebendo linhas em silencio e
+        // volta com a tecla VERMELHA do controle.
+        if (t.indexOf("primeiro quadro na tela") >= 0) {
+          var p = document.getElementById("diag");
+          if (p) p.hidden = true;
+          // A PARTIR DAQUI A TECLA VERMELHA E DO APP, e nao mais deste painel.
+          // Ver a nota longa no ouvinte dela: com o C desenhando, o painel que o
+          // dono quer e o de dentro do app — o mesmo que existe na TV da LG.
+          window.__nvPrimeiroQuadro = 1;
+        }
+      }
+    },
+    printErr: function (t) { console.warn(t); if (window.__nvDiag) window.__nvDiag(t, 1); }
+  };
+
+  // Teclas do controle Samsung. Sem registrar, o firmware nao entrega nada alem
+  // das setas e do OK — as coloridas, as de midia e o Return sao engolidas
+  // pelo sistema. Equivale ao hint SDL_WEBOS_ACCESS_POLICY_KEYS_BACK do webOS.
+  try {
+    if (window.tizen && tizen.tvinputdevice) {
+      // ChannelUp e o atalho de "Salvos" NO TIZEN, e a razao e o controle e nao
+      // o software: os One Remote novos NAO tem fileira de cores. A azul chega
+      // ao app, mas so depois de abrir a barra de cores pelo botao de numeros —
+      // ninguem faz isso por um atalho. O rocker CH e botao FISICO em todo
+      // controle Samsung e o app nao usa canal para nada. Na LG a azul continua,
+      // que e onde ela funciona bem.
+      ["MediaPlay", "MediaPause", "MediaPlayPause", "MediaStop",
+       "MediaRewind", "MediaFastForward", "ChannelUp",
+       "ColorF0Red", "ColorF1Green", "ColorF2Yellow", "ColorF3Blue"]
+        .forEach(function (k) {
+          try { tizen.tvinputdevice.registerKey(k); } catch (e) {}
+        });
+    }
+  } catch (e) {}
+
+  // O QUE ESTE CONTROLE TEM DE VERDADE, dito pela propria TV.
+  //
+  // Registrar uma tecla nao prova que ela EXISTE no controle da pessoa. Os
+  // controles Samsung novos (One Remote) nao tem fileira de cores: chegar na
+  // azul exige abrir a barra de cores pelo botao de numeros, e ninguem faz isso
+  // para um atalho. Escolher a tecla substituta no chute custa uma versao
+  // inteira; getSupportedKeys() responde de graca, e a linha sai no painel de
+  // log — entao quem relatar um defeito ja manda junto o que o aparelho dele
+  // aceita.
+  //
+  // So os NOMES, uma linha, no arranque. Nao muda comportamento nenhum.
+  try {
+    if (window.tizen && tizen.tvinputdevice &&
+        tizen.tvinputdevice.getSupportedKeys) {
+      var ks = tizen.tvinputdevice.getSupportedKeys() || [];
+      var nomes = [];
+      for (var i = 0; i < ks.length; i++) nomes.push(ks[i].name);
+      console.log("[tecla] a TV aceita " + ks.length + ": " + nomes.join(" "));
+    }
+  } catch (e) {}
+
+  // MEDIDOR DE WORKERS. Existe porque a TV travou DE VEZ — nem a tecla
+  // vermelha respondia, e o listener dela e JS no fio principal. Isso nao e
+  // aborto (aborto aparece como erro no painel): e o FIO PRINCIPAL BLOQUEADO.
+  //
+  // A causa documentada mais provavel para esse quadro no Emscripten e o pool
+  // de pthreads esgotado: quando nao ha worker livre, criar um exige que o fio
+  // principal volte ao laco de eventos; se ele estiver esperando justamente
+  // esse fio, ninguem anda. O app tem 41 pontos de pthread_create.
+  //
+  // Em vez de chutar um numero para o pool de novo — ja errei duas vezes assim
+  // nesta investigacao — isto MEDE. PThread.runningWorkers e unusedWorkers sao
+  // do proprio runtime. Se "livres" chegar a zero antes do travamento, o pool e
+  // a causa e o numero certo sai da medicao. Se nunca chegar perto, nao e o
+  // pool e eu procuro em outro lugar.
+  //
+  // O log sai a cada 3 s, junto do relatorio de fps, e vai para o console — que
+  // o `sdb dlog` carrega mesmo depois de o painel congelar.
+  setInterval(function () {
+    try {
+      // Pelo Module, nunca pela global: ler a global de um simbolo NAO
+      // exportado dispara o abort() do runtime, e o medidor mataria o app.
+      // Este emscripten expoe unusedWorkers, e NAO runningWorkers — a primeira
+      // versao disto testava runningWorkers e saia calada, sem imprimir nada.
+      // O que interessa e justamente o numero de LIVRES: e ele que chega a zero
+      // quando o pool vira o teto.
+      var PT = Module.PThread;
+      if (!PT || !PT.unusedWorkers) return;
+      var livres = PT.unusedWorkers.length;
+      var pth = PT.pthreads ? Object.keys(PT.pthreads).length : -1;
+      var t = "[fios] livres=" + livres + " vivos=" + pth +
+              (livres === 0 ? "  <<< POOL NO LIMITE" : "");
+      console.log(t);
+      if (window.__nvDiag) window.__nvDiag(t, livres === 0);
+    } catch (e) {}
+  }, 3000);
+
+  // TECLA RETURN DO CONTROLE SAMSUNG -> Escape.
+  //
+  // No webOS o botao de voltar chega ao SDL como SDLK_AC_BACK e o app ja o
+  // trata em toda tela. Na Samsung ele e o keyCode 10009 (XF86Back), que nao
+  // existe na tabela do SDL: o evento chega ao navegador e MORRE ali, sem virar
+  // tecla nenhuma para o C. O sintoma e o botao de voltar nao fazer nada dentro
+  // de uma lista — que e onde nao ha outra saida.
+  //
+  // Traduzir aqui e melhor que ensinar o C a conhecer 10009: o codigo de voltar
+  // ja existe e e o mesmo dos outros dois alvos; o que faltava era a tecla
+  // chegar. Escape porque as telas ja o aceitam ao lado de AC_BACK.
+  window.addEventListener("keydown", function (ev) {
+    if (ev.keyCode !== 10009) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    var alvo = document.getElementById("canvas") || window;
+    ["keydown", "keyup"].forEach(function (t) {
+      alvo.dispatchEvent(new KeyboardEvent(t, {
+        key: "Escape", code: "Escape", keyCode: 27, which: 27,
+        bubbles: true, cancelable: true
+      }));
+    });
+  }, true);
+
+  // DOIS PAINEIS DE LOG, UMA TECLA VERMELHA — e por isso ela troca de dono.
+  //
+  // Agora existe um painel de log EM C (src/registro.c), que o dono abre com a
+  // vermelha nas DUAS TVs: no webOS nao ha shell nenhum e um painel em DOM la e
+  // impossivel. Mas o painel DOM daqui nao pode simplesmente sair: ele sobrevive
+  // a coisas que o painel em C nao sobrevive, porque nao depende do laco de
+  // quadro — tela preta antes do primeiro quadro, contexto WebGL recusado,
+  // abort() do runtime. Foi para esses casos que ele nasceu.
+  //
+  // A regra, entao, e por ESTADO e nao por preferencia:
+  //   antes do primeiro quadro  -> a vermelha e do painel DOM (o C nao desenha)
+  //   depois do primeiro quadro -> a vermelha vai para o app
+  //   a qualquer momento        -> a VERDE traz o painel DOM de volta
+  // A verde ja e registrada acima (ColorF1Green) e o app nao a usa. Ela e a
+  // saida para "o C parou de desenhar depois de ter desenhado": ai a vermelha
+  // vai para um app que nao pinta mais nada, e sem a verde nao haveria mais como
+  // ler nada. (Com o FIO PRINCIPAL bloqueado nenhuma das duas responde — o
+  // ouvinte tambem e JS no fio principal. Isso continua sem solucao aqui e esta
+  // descrito no medidor de workers, acima.)
+  //
+  // O 403 NAO E REPASSADO ao SDL: o keyCode das coloridas da Samsung nao existe
+  // na tabela do SDL e o evento morreria no navegador, exatamente como o 10009
+  // do Return. Vira um F9 sintetico, que e a tecla que registro.c escuta nos
+  // tres alvos.
+  function mostrarPainelDOM() {
+    var p = document.getElementById("diag");
+    if (!p) return;
+    p.hidden = !p.hidden;
+    if (!p.hidden && window.__nvPintar) window.__nvPintar();
+  }
+  window.addEventListener("keydown", function (ev) {
+    // 403 = ColorF0Red, 404 = ColorF1Green, 427 = ChannelUp. F1/F2/F3 servem
+    // para testar no desktop.
+    var vermelha = (ev.keyCode === 403 || ev.key === "F1");
+    var verde    = (ev.keyCode === 404 || ev.key === "F2");
+    var canal    = (ev.keyCode === 427 || ev.key === "F3");
+    if (!vermelha && !verde && !canal) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    // CANAL+ ABRE "SALVOS". O keyCode 427 nao existe na tabela do SDL e morreria
+    // no navegador, igual as coloridas: vira um "s" sintetico, que e a tecla que
+    // app.c ja escuta ao lado do NV_SCANCODE_BLUE da LG.
+    if (canal) {
+      var alvoS = document.getElementById("canvas") || window;
+      ["keydown", "keyup"].forEach(function (t) {
+        alvoS.dispatchEvent(new KeyboardEvent(t, {
+          key: "s", code: "KeyS", keyCode: 83, which: 83,
+          bubbles: true, cancelable: true
+        }));
+      });
+      return;
+    }
+    if (verde || !window.__nvPrimeiroQuadro) { mostrarPainelDOM(); return; }
+    // O par keydown+keyup completo: mandar so o keydown deixa a tecla presa
+    // para o SDL, e registro.c usa o keyup para nao vazar o toque adiante.
+    var alvo = document.getElementById("canvas") || window;
+    ["keydown", "keyup"].forEach(function (t) {
+      alvo.dispatchEvent(new KeyboardEvent(t, {
+        key: "F9", code: "F9", keyCode: 120, which: 120,
+        bubbles: true, cancelable: true
+      }));
+    });
+  }, true);
+
+  // O SDL le o teclado do elemento com foco. Sem isto o app abre e nao responde
+  // ao controle, o que parece travamento e nao falta de foco.
+  window.addEventListener("load", function () {
+    var c = document.getElementById("canvas");
+    if (c) c.focus();
+  });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

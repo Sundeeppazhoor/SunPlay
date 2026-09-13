@@ -1,0 +1,105 @@
+#!/bin/bash
+# Monta o .wgt a partir do que tools/tizen.sh compilou.
+#
+# O .wgt E O ENTREGAVEL. Nao existe .tpk nativo para TV Samsung: o perfil TV do
+# Tizen Studio so gera widget, .tpk nativo e perfil mobile/wearable e o firmware
+# recusa sem certificado de parceiro, Tizen .NET para TV acabou e o NaCl foi
+# encerrado em 2021.
+#
+# ---------------------------------------------------------------------------
+# QUEM ASSINA E QUEM INSTALA, E ISSO NAO E ESCOLHA NOSSA
+#
+# O certificado de DISTRIBUIDOR do Tizen carrega uma LISTA BRANCA DE DUIDs — o
+# identificador de cada TV. Cabem ate 50, e ela NAO PODE SER ALTERADA depois de
+# criada. Um .wgt assinado aqui so instalaria nas TVs que estivessem nessa lista
+# no momento em que o certificado foi gerado; na TV de qualquer outra pessoa ele
+# e recusado.
+#
+# Ou seja: distribuir um pacote assinado por nos e IMPOSSIVEL, nao inconveniente.
+# O entregavel e o .wgt SEM ASSINATURA, e quem instala assina com o proprio
+# certificado, gerado com o DUID da propria TV. E o que Jellyfin e o resto do
+# catalogo da comunidade fazem.
+#
+# Este script produz o pacote sem assinatura SEMPRE. Se a CLI `tizen` estiver no
+# PATH e TIZEN_PERFIL apontar para um perfil de certificado, produz TAMBEM um
+# assinado — util so para testar na propria TV de quem compilou.
+# ---------------------------------------------------------------------------
+set -e
+cd "$(dirname "$0")/.."
+
+ENTRADA="${NUVIO_SAIDA:-build/tizen}"
+ESTAGIO="build/wgt-stage"
+NOME="${NUVIO_WGT_NOME:-NuvioTV-native}"
+
+[ -f "$ENTRADA/index.html" ] || { echo "tizen-wgt.sh: rode tools/tizen.sh antes" >&2; exit 2; }
+
+rm -rf "$ESTAGIO"
+mkdir -p "$ESTAGIO"
+cp "$ENTRADA"/index.html "$ENTRADA"/index.js "$ENTRADA"/index.wasm "$ESTAGIO"/
+[ -f "$ENTRADA/index.data" ] && cp "$ENTRADA/index.data" "$ESTAGIO"/
+cp tools/tizen-config.xml "$ESTAGIO"/config.xml
+# ICONE OFICIAL DO SAMSUNG, e nao o deploy/app/icon.png do LG.
+#
+# O do LG e 80x80, que e o tamanho que o webOS pede e que na grade de apps da
+# Samsung apareceria interpolado para cima. (Ele era um marcador chapado de 211
+# bytes ate a versao 1.0.7, quando virou a marca de verdade — mas o tamanho
+# continua sendo o do outro alvo.) deploy/app/tizen/icon.png e o
+# store-assets/samsung/icon-512x423.png do app web, que e a arte oficial no
+# tamanho que a Samsung especifica para a grade (512 de largura).
+if [ -f deploy/app/tizen/icon.png ]; then
+  cp deploy/app/tizen/icon.png "$ESTAGIO"/icon.png
+else
+  echo "tizen-wgt.sh: AVISO — sem deploy/app/tizen/icon.png, usando o icone do LG" >&2
+  cp deploy/app/icon.png "$ESTAGIO"/icon.png
+fi
+
+# CONFERE ANTES DE FECHAR. Um .wgt sem o .wasm instala, abre e fica preto — o
+# mesmo tipo de falha muda que ja mordeu o empacotamento Tizen do fork em
+# JavaScript, que saiu sem player.chunk.js e so falhou na TV.
+for f in index.html index.js index.wasm config.xml icon.png; do
+  [ -s "$ESTAGIO/$f" ] || { echo "tizen-wgt.sh: FALTA $f no estagio" >&2; exit 1; }
+done
+# A arte empacotada entra pelo index.data (--preload-file em tools/tizen.sh), que
+# tools/tizen-art.sh ja filtra: sem collections/, sem cache/, sem *.txt de
+# credencial. Aqui so se confere que ninguem contornou aquilo copiando a mao.
+if find "$ESTAGIO" -name '*.txt' | grep -q .; then
+  echo "tizen-wgt.sh: arquivo .txt solto no estagio — pode ser credencial" >&2
+  exit 1
+fi
+
+# .wgt e um zip com config.xml na raiz. Sem assinatura, de proposito.
+rm -f "$NOME.wgt"
+( cd "$ESTAGIO" && zip -q -r -X "../../$NOME.wgt" . )
+echo "tizen-wgt.sh: $NOME.wgt ($(du -h "$NOME.wgt" | cut -f1)) — SEM ASSINATURA"
+
+if command -v tizen >/dev/null && [ -n "${TIZEN_PERFIL:-}" ]; then
+  echo "tizen-wgt.sh: assinando tambem com o perfil '$TIZEN_PERFIL' (so serve nas SUAS TVs)"
+  tizen package -t wgt -s "$TIZEN_PERFIL" -- "$ESTAGIO"
+  mv "$ESTAGIO"/*.wgt "$NOME-assinado.wgt" 2>/dev/null || true
+fi
+
+cat <<'FIM'
+
+COMO INSTALAR (quem instala assina, ver o cabecalho deste script):
+
+  1. Tizen Studio + TV extension. No Certificate Manager, criar um certificado
+     Samsung: perfil de autor, depois o de distribuidor com o DUID DA SUA TV.
+     A TV mostra o DUID em Apps > digitar 12345 > Developer Mode > About, e o
+     sdb tambem responde:  sdb devices
+     ESSA LISTA NAO PODE SER MUDADA DEPOIS. Registre todas as TVs de uma vez.
+
+  2. Na TV: Apps > digitar 12345 > Developer Mode ON > IP desta maquina.
+
+  3. Assinar e instalar:
+       unzip NuvioTV-native.wgt -d nuvio-wgt
+       tizen package -t wgt -s <seu-perfil> -- nuvio-wgt
+       sdb connect <ip-da-tv>
+       tizen install -n nuvio-wgt/NuvioTV-native.wgt -t $(sdb devices | awk 'NR==2{print $1}')
+
+  Privilegios do config.xml sao todos de nivel PUBLIC. Um privilegio acima do
+  nivel do certificado NAO degrada: faz a instalacao falhar inteira com
+  MISMATCHED_PRIVILEGE_LEVEL.
+
+  Ressalva conhecida: em firmwares novos o app instalado por Developer Mode para
+  de abrir depois de um tempo e precisa ser reinstalado.
+FIM

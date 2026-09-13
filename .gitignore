@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build artifacts
+dist/*.ipk
+*.o
+*.a
+*.so
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log

@@ -1,0 +1,177 @@
+// Reproducao de video de verdade nesta TV (webOS 4.10), por LS2 direto.
+//
+// O modulo NAO desenha nada. O video vive num PLANO DE HARDWARE separado, atras
+// da superficie GL do app; o que o app faz e abrir um buraco transparente por
+// onde esse plano aparece (ver gfx_furo). Consequencia que economiza horas:
+// glReadPixels e o servico de captura da TV NUNCA vao fotografar o video. Isso
+// e o modelo, nao defeito — verificar reproducao se faz pelo estado, ou pelo
+// access log de quem serve o arquivo.
+//
+// Por que LS2 direto e nao StarfishMediaAPIs, tudo medido no aparelho:
+// o construtor da StarfishMediaAPIs chama exit(0) quando o processo nao casa com
+// o "exeName" do papel LS2 (nao e crash: atexit dispara e o journal fica mudo),
+// e mesmo com o papel certo ele nunca chega a falar com com.webos.media aqui —
+// responde erro 202 "Media Not Found", que e string interna da propria lib.
+// A sequencia abaixo, ao contrario, saiu de captura ls-monitor do navegador da
+// TV tocando o mesmo arquivo: e o que comprovadamente funciona.
+#ifndef NV_VIDEO_H
+#define NV_VIDEO_H
+
+// Registra no barramento e sobe o laco de eventos. 1 se deu certo.
+// Falhar aqui nao e fatal: o app segue sem video.
+int  video_iniciar(void);
+
+// Comeca a tocar. `url` e http(s):// ou file://. NAO mandar mediaTransportType:
+// o transporte sai do prefixo da URL, e mandar o campo faz o load aceitar,
+// devolver mediaId e nunca buscar o arquivo — falha silenciosa.
+int  video_tocar(const char *url);
+
+// Chamar UMA VEZ POR QUADRO. Hoje serve ao prazo do recuo de Dolby Vision
+// (ver o comentario em video.c): sem esta batida, um arquivo que a TV recusa
+// com DolbyHdrInfo ficaria sem imagem ate o usuario desistir e sair.
+void video_bombear(void);
+void video_parar(void);
+void video_pausar(int pausado);
+void video_buscar(double segundos);
+
+// Retangulo do plano de video, em coordenadas de tela 1920x1080. Fica preso a
+// tela: pedir origem negativa ou tamanho maior que o painel APAGA o plano — um
+// plano de hardware nao recorta o excedente. Para ampliar, use a funcao abaixo.
+void video_janela(int x, int y, int w, int h);
+
+// Zoom de verdade: recorta a FONTE (coordenadas do quadro decodificado, ver
+// video_largura/video_altura) e desenha no destino (coordenadas de tela). Pedir
+// um pedaco menor da fonte para o mesmo destino e o que amplia a imagem, e o
+// que tira da vista a barra preta embutida no quadro.
+void video_janela_fonte(int sx, int sy, int sw, int sh,
+                        int dx, int dy, int dw, int dh);
+
+double video_pos(void);      // segundos decorridos
+double video_duracao(void);  // 0 enquanto desconhecida
+
+// Segundo em que comecam os CREDITOS, ou 0 quando o arquivo nao diz. Sai do
+// capitulo final do Matroska, lido no mesmo trecho de cabecalho que ja e
+// baixado para descobrir o idioma das faixas — ver mkv.h. Vale so para MKV com
+// capitulos; quem chama precisa de um plano B.
+double video_creditos(void);
+double video_buffer_fim(void); // ate onde o buffer cobre (s); 0 se desconhecido
+// Afirmacao de Dolby Vision da FONTE escolhida (o addon descreve o arquivo).
+// Chamar ANTES de video_tocar/definir_fonte: e o que decide o hdrType que o
+// ACB descreve ao tv.display.
+void video_definir_dv(int dv);
+
+// A fonte e MP4? Chamar ANTES de video_tocar, junto com video_definir_dv.
+//
+// Serve para NAO sondar o cabecalho Matroska num arquivo que nunca vai ter um.
+// Essa sonda baixa o inicio do arquivo pela MESMA conexao que esta
+// transmitindo, e num MP4 ela e trabalho garantidamente perdido — o proprio
+// log dizia "nenhuma faixa lida" toda vez.
+void video_definir_mp4(int ehMp4);
+int    video_tocando(void);
+int    video_pronto(void);   // 1 depois do loadCompleted
+int    video_ativo(void);    // 1 assim que ha mediaId — e o que abre o furo
+
+// --- faixas -----------------------------------------------------------------
+// Tudo isto sai do evento sourceInfo da assinatura do uMS: o addon nao informa
+// nada disso, e so o pipeline sabe o que ha DENTRO do arquivo.
+
+#define NV_FAIXA_MAX 12
+
+typedef struct {
+  char rotulo[48];   // "Ingles · Atmos 5.1" ou "Legenda 3"
+  char idioma[8];    // "en"; vazio quando o arquivo nao etiqueta
+  int  numero;       // indice que o selectTrack espera
+} VideoFaixa;
+
+int  video_n_audio(void);
+int  video_n_legenda(void);
+const VideoFaixa *video_audio(int i);
+const VideoFaixa *video_legenda(int i);
+int  video_audio_atual(void);
+int  video_legenda_atual(void);   // -1 = desligada
+
+void video_escolher_audio(int i);
+void video_escolher_legenda(int i);   // -1 desliga
+
+// Legenda de arquivo externo (OpenSubtitles). O uMS baixa e sincroniza
+// sozinho; o app so passa a URL.
+void video_legenda_externa(const char *url);
+// O uMS identifica o formato pela extensao da URI. Addons costumam entregar
+// /file/123 sem .srt; esta funcao torna a URI reconhecivel sem mudar o arquivo.
+void video_normalizar_url_legenda(const char *url, char *dst, unsigned tam);
+
+// --- ESTILO DA LEGENDA -------------------------------------------------------
+//
+// PROVADO NO APARELHO (LG C9, webOS 4.10, 2026-09-02) com um filme tocando: os
+// cinco metodos abaixo mudam a legenda na tela de verdade. O teste foi visual e
+// nao pelo retorno, porque o uMS responde `returnValue:true` PARA QUALQUER
+// COISA — ele aceitou ate valores que eu inventei para `charEdgeType`. Nesta
+// API o codigo de retorno nao e evidencia de nada.
+//
+// A legenda e desenhada pelo PIPELINE, abaixo da superficie GL: ela nao aparece
+// em glReadPixels, igual ao video. Verificar mudanca aqui exige olhar a tela.
+//
+// Os valores sao os indices das opcoes oferecidas na folha, nao os do uMS: a
+// traducao para o vocabulario do aparelho mora em video.c, que e quem conhece o
+// pipeline.
+typedef struct {
+  int tamanho;    // 50..200%, passo 10 (120 = padrao)
+  int cor;        // indice em VIDEO_LEG_CORES
+  int fundo;      // 0 nenhum; 1..4 = escuro 25/50/75/100%
+  int posicao;    // 0..7  -> position -3..4 no uMS
+  int borda;      // 0 nenhuma, 1 contorno, 2 sombra
+  int atrasoMs;   // negativo adianta
+  int opacidade;  // 0..3 = texto 100/75/50/25%
+  int familia;    // TxtFamilia; aplicada ao overlay externo (OpenSubtitles)
+} VideoLegendaEstilo;
+
+#define VIDEO_LEG_NCORES 6
+// Nomes que o uMS aceita em charColor. Expostos porque a folha desenha os
+// rotulos e precisa da mesma ordem.
+extern const char *const VIDEO_LEG_CORES[VIDEO_LEG_NCORES];
+extern const char *const VIDEO_LEG_CORES_PT[VIDEO_LEG_NCORES];
+
+// Aplica agora, se houver sessao. O estilo fica GUARDADO e e reaplicado a cada
+// load: o pipeline nasce de novo a cada video e nao carrega o ajuste anterior.
+void video_legenda_estilo(const VideoLegendaEstilo *e);
+
+// Verdade sobre o fluxo, para os selos da tela nao mentirem.
+int  video_tem_atmos(void);
+// 1 so quando o hdrType do PIPELINE diz DolbyVision. A afirmacao da fonte
+// (video_definir_dv) nao entra aqui de proposito: ver o comentario em video.c.
+int  video_tem_dolby_vision(void);
+const char *video_hdr(void);   // hdrType cru: "none", "HDR10", "DolbyVision"...
+// Dimensoes do QUADRO decodificado, do videoInfo. Sao elas que dao a proporcao
+// usada pelos modos de zoom do player.
+int  video_largura(void);
+int  video_altura(void);
+
+// --- TELA PRETA COM AUDIO TOCANDO -------------------------------------------
+//
+// NAO DA PARA DETECTAR, e isso foi MEDIDO neste aparelho, nao suposto: o uMS
+// reporta videoInfo, sourceInfo e loadCompleted normalmente nos arquivos que
+// ficam sem imagem (caso registrado: videoInfo 3840x1606 hdrType=DolbyVision,
+// loadCompleted em 3212 ms, tela preta com o audio correndo). Nao existe no uMS
+// sinal de QUADRO EXIBIDO — o currentTime avanca puxado pelo audio. A tentativa
+// de recuo automatico por prazo esta registrada como removida em video.c.
+//
+// Os dois recuos automaticos que EXISTEM cobrem o caso em que o pipeline
+// desmente a fonte (pedimos DolbyVision e o hdrType volta HDR10 ou none). O
+// caso que sobra e o pior: o pipeline CONFIRMA DolbyVision, o ACB aceita, e nao
+// ha quadro. Recuar automaticamente ali quebraria o DV que funciona de verdade
+// nos MP4 perfil 5 e 8 — e por isso a saida e a pessoa dizer que a tela esta
+// preta, em vez de o app adivinhar.
+//
+// video_forcar_sdr recarrega a MESMA fonte, na posicao atual, sem afirmar HDR
+// nenhum. A escolha vale pela sessao: uma recuperacao posterior do pipeline nao
+// traz o Dolby Vision de volta pelas costas.
+//
+// video_pode_forcar_sdr diz se o alvo tem o que renegociar — so o webOS tem.
+// No Tizen o HDR e decidido pelo AVPlay do firmware e nao ha equivalente; a
+// interface usa isto para nao oferecer um botao que nao faz nada.
+int  video_pode_forcar_sdr(void);
+void video_forcar_sdr(void);
+
+void video_encerrar(void);
+
+#endif

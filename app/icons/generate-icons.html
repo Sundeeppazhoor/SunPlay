@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Generate Icons</title>
+</head>
+<body style="background: #222; color: #fff;">
+  <h2>Icon Generator</h2>
+  <img id="svgImg" src="icon.svg" style="display:none;" />
+  <div id="links"></div>
+  <script>
+    window.onload = function() {
+      const img = document.getElementById('svgImg');
+      const sizes = [80, 130, 256];
+      const linksDiv = document.getElementById('links');
+
+      sizes.forEach(size => {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, size, size);
+        
+        const a = document.createElement('a');
+        a.href = canvas.toDataURL('image/png');
+        a.download = `icon-${size}.png`;
+        a.innerText = `Download ${size}x${size} PNG`;
+        a.style = "display: block; color: #4af; margin: 10px;";
+        linksDiv.appendChild(a);
+        
+        document.body.appendChild(canvas);
+      });
+    };
+  </script>
+</body>
+</html>

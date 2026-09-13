@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1920, initial-scale=1.0">
+    <title>SunPlay</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <script src="webOSjs/webOS.js"></script>
+</head>
+<body>
+
+    <!-- ===== HOME SCREEN ===== -->
+    <div id="home-screen" class="screen active">
+        <div class="home-container">
+            <!-- Header -->
+            <div class="home-header">
+                <div class="logo-container">
+                    <svg class="logo-icon" viewBox="0 0 120 120" width="64" height="64">
+                        <defs>
+                            <radialGradient id="sunGrad" cx="50%" cy="50%" r="50%">
+                                <stop offset="0%" stop-color="#FFD700"/>
+                                <stop offset="100%" stop-color="#FF8C00"/>
+                            </radialGradient>
+                        </defs>
+                        <circle cx="60" cy="60" r="30" fill="url(#sunGrad)"/>
+                        <g stroke="#FF8C00" stroke-width="4" stroke-linecap="round">
+                            <line x1="60" y1="10" x2="60" y2="22"/>
+                            <line x1="60" y1="98" x2="60" y2="110"/>
+                            <line x1="10" y1="60" x2="22" y2="60"/>
+                            <line x1="98" y1="60" x2="110" y2="60"/>
+                            <line x1="24.5" y1="24.5" x2="33" y2="33"/>
+                            <line x1="87" y1="87" x2="95.5" y2="95.5"/>
+                            <line x1="24.5" y1="95.5" x2="33" y2="87"/>
+                            <line x1="87" y1="33" x2="95.5" y2="24.5"/>
+                        </g>
+                        <polygon points="50,42 50,78 80,60" fill="white"/>
+                    </svg>
+                    <h1 class="logo-text">SunPlay</h1>
+                </div>
+                <span class="version-badge">v1.0.0</span>
+            </div>
+
+            <!-- URL Input Section -->
+            <div class="url-section">
+                <label class="input-label" for="url-input">Enter Stream URL</label>
+                <div class="input-row">
+                    <input 
+                        type="text" 
+                        id="url-input" 
+                        class="url-input" 
+                        placeholder="https://example.com/movie.mkv"
+                        data-focusable="true"
+                        autocomplete="off"
+                        spellcheck="false"
+                    >
+                    <div class="action-buttons">
+                        <button 
+                            id="play-btn" 
+                            class="play-btn"
+                            data-focusable="true"
+                        >
+                            <svg viewBox="0 0 24 24" width="28" height="28" fill="white">
+                                <polygon points="5,3 19,12 5,21"/>
+                            </svg>
+                            <span>Play</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="qr-section" id="qr-section">
+                <div class="qr-card">
+                    <div id="qr-container" class="qr-container">
+                        <div class="qr-placeholder">Loading QR...</div>
+                    </div>
+                    <div class="qr-info">
+                        <p class="qr-label">Scan with phone to send stream URLs directly to TV</p>
+                        <p class="qr-url" id="qr-url-text"></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent History -->
+            <div class="history-section" id="history-section">
+                <div class="section-header">
+                    <h2 class="section-title">Recent</h2>
+                    <button 
+                        id="clear-history-btn" 
+                        class="text-btn"
+                        data-focusable="true"
+                    >Clear All</button>
+                </div>
+                <div class="history-list" id="history-list">
+                    <p class="empty-state" id="history-empty">No recent playback</p>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="home-footer">
+                <button 
+                    id="settings-btn" 
+                    class="footer-btn"
+                    data-focusable="true"
+                >
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                        <path d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97s-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64L4.57 11c-.04.34-.07.67-.07 1s.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.98l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66z"/>
+                    </svg>
+                    Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== PLAYER SCREEN ===== -->
+    <div id="player-screen" class="screen">
+        <div id="player-container" class="player-container"></div>
+    </div>
+
+    <!-- ===== SETTINGS SCREEN ===== -->
+    <div id="settings-screen" class="screen">
+        <div class="settings-container">
+            <div class="settings-header">
+                <button id="settings-back-btn" class="back-btn" data-focusable="true">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="white">
+                        <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                    </svg>
+                </button>
+                <h1 class="settings-title">Settings</h1>
+            </div>
+
+            <div class="settings-list">
+                <div class="settings-group">
+                    <h3 class="settings-group-title">Playback</h3>
+                    <div class="setting-item" data-focusable="true" data-setting="autoResume">
+                        <span class="setting-label">Auto-Resume Playback</span>
+                        <span class="setting-value" id="setting-autoResume">On</span>
+                    </div>
+                    <div class="setting-item" data-focusable="true" data-setting="lowMemoryMode">
+                        <span class="setting-label">Memory Saver (4K Remux / Low RAM)</span>
+                        <span class="setting-value" id="setting-lowMemoryMode">On</span>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <h3 class="settings-group-title">Storage</h3>
+                    <div class="setting-item" data-focusable="true" id="setting-clear-history-item">
+                        <span class="setting-label">Clear Playback History</span>
+                        <span class="setting-value" style="color:#ff8c00; font-weight:bold;">Clear Now</span>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <h3 class="settings-group-title">About</h3>
+                    <div class="setting-item">
+                        <span class="setting-label">App Version</span>
+                        <span class="setting-value">1.0.0</span>
+                    </div>
+                    <div class="setting-item" id="device-info-item">
+                        <span class="setting-label">Device</span>
+                        <span class="setting-value" id="setting-deviceInfo">Detecting...</span>
+                    </div>
+                    <div class="setting-item">
+                        <span class="setting-label">4K Memory Notice</span>
+                        <span class="setting-value" style="font-size:14px; opacity:0.8;">Memory Saver prevents LG TV app restarts on large 4K files</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== TOAST CONTAINER ===== -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- ===== SCRIPTS ===== -->
+    <script src="lib/qrcode.min.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/sunplay-player.js"></script>
+    <script src="js/qrcode.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
