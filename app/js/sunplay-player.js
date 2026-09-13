@@ -281,16 +281,19 @@ SunPlay.Player = (function () {
         // Show OSD briefly
         showOSD();
 
-        // 1. Search OpenSubtitles with cleaned title
+        // 1. Resolve real filename from hoster API / headers (e.g. Pixeldrain / direct links)
+        resolveRealMetadata(url);
+
+        // 2. Search OpenSubtitles with cleaned title
         fetchOpenSubtitles(displayTitle);
 
-        // 2. Probe for companion sidecar subtitles (.srt, .vtt)
+        // 3. Probe for companion sidecar subtitles (.srt, .vtt)
         probeSidecarSubtitles(url);
 
-        // 3. Probe embedded container tracks (MKV/MP4 EBML header + release tags)
+        // 4. Probe embedded container tracks (MKV/MP4 EBML header + release tags)
         probeContainerTracks(url);
 
-        // 4. Start auto-resume tracker
+        // 5. Start auto-resume tracker
         startResumeTracker();
     }
 
@@ -848,7 +851,9 @@ SunPlay.Player = (function () {
                     var isBmp = (s.codec.indexOf('PGS') !== -1 || s.codec.indexOf('VOBSUB') !== -1);
                     var cleanCodec = s.codec.replace('S_', '').replace('TEXT/', '');
                     var badge = isBmp ? 'BluRay PGS Bitmap' : cleanCodec;
-                    var labelText = s.name ? s.name : (lInfo.name + ' [' + badge + ']');
+                    var langTitle = lInfo.name || 'Unknown';
+                    var extraNote = (s.name && s.name.toLowerCase() !== langTitle.toLowerCase() && s.name.toLowerCase() !== 'und') ? (' · ' + s.name) : '';
+                    var labelText = langTitle + ' [' + badge + ']' + extraNote;
 
                     subtitleTracks.unshift({
                         id: 'mkv_sub_' + s.number,
@@ -879,7 +884,9 @@ SunPlay.Player = (function () {
             result.audio.forEach(function (a) {
                 var lInfo = resolveLangInfo(a.language, a.name);
                 var codecClean = a.codec.replace('A_', '').replace('/', ' ');
-                var lbl = a.name ? a.name : (lInfo.name + ' (' + codecClean + ')');
+                var audioLang = lInfo.name || 'Audio';
+                var extraAudioNote = (a.name && a.name.toLowerCase() !== audioLang.toLowerCase() && a.name.toLowerCase() !== 'und') ? (' · ' + a.name) : '';
+                var lbl = audioLang + ' (' + codecClean + ')' + extraAudioNote;
                 audioTracks.push({
                     id: 'mkv_aud_' + a.number,
                     type: 'embedded_mkv',
@@ -897,6 +904,56 @@ SunPlay.Player = (function () {
         }
     }
 
+    function resolveRealMetadata(videoUrl) {
+        if (!videoUrl) return;
+
+        // Check for pixeldrain URLs: e.g. https://pixeldrain.dev/api/file/ck1iYV8Z?download or https://pixeldrain.com/u/ck1iYV8Z
+        var pdMatch = videoUrl.match(/pixeldrain\.(?:dev|com)\/(?:api\/file\/|u\/)([a-zA-Z0-9_-]+)/i);
+        if (pdMatch && pdMatch[1]) {
+            var fileId = pdMatch[1];
+            fetch('https://pixeldrain.com/api/file/' + fileId + '/info')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data && data.name) {
+                        console.log('[SunPlay.Player] Resolved Pixeldrain filename:', data.name);
+                        applyNewTitle(data.name);
+                    }
+                })
+                .catch(function () {
+                    fetch('https://pixeldrain.dev/api/file/' + fileId + '/info')
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            if (data && data.name) {
+                                console.log('[SunPlay.Player] Resolved Pixeldrain filename (dev):', data.name);
+                                applyNewTitle(data.name);
+                            }
+                        })
+                        .catch(function () {});
+                });
+        }
+    }
+
+    function applyNewTitle(newFilename) {
+        if (!newFilename) return;
+        currentRawTitle = newFilename;
+        var clean = cleanStreamTitle(newFilename);
+        if (clean && clean !== 'Stream' && clean !== displayTitle) {
+            console.log('[SunPlay.Player] Updating display title from metadata to:', clean);
+            displayTitle = clean;
+            var titleEl = document.getElementById('sp-osd-title');
+            if (titleEl) {
+                titleEl.innerText = displayTitle;
+                titleEl.setAttribute('title', currentRawTitle);
+            }
+            // Trigger OpenSubtitles with the real resolved title!
+            fetchOpenSubtitles(displayTitle);
+
+            // Re-run fallback filename analysis on the real filename
+            var fallback = fallbackFilenameTracks(newFilename);
+            if (fallback) applyProbedTracks(fallback);
+        }
+    }
+
     function probeContainerTracks(videoUrl) {
         if (!videoUrl || videoUrl.indexOf('http') !== 0) return;
 
@@ -908,6 +965,21 @@ SunPlay.Player = (function () {
         xhr.timeout = 8000;
 
         xhr.onload = function () {
+            // Check Content-Disposition header for real filename
+            try {
+                var disp = xhr.getResponseHeader('Content-Disposition');
+                if (disp) {
+                    var match = disp.match(/filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i);
+                    if (match && match[1]) {
+                        var realFilename = decodeURIComponent(match[1].trim().replace(/^['"]|['"]$/g, ''));
+                        console.log('[SunPlay.Player] Discovered real filename from Content-Disposition:', realFilename);
+                        applyNewTitle(realFilename);
+                    }
+                }
+            } catch (dispErr) {
+                console.warn('[SunPlay.Player] Content-Disposition read error:', dispErr);
+            }
+
             if (xhr.status === 200 || xhr.status === 206) {
                 try {
                     var u8 = new Uint8Array(xhr.response);
@@ -921,19 +993,19 @@ SunPlay.Player = (function () {
                 }
             }
             // Fallback to filename analysis
-            var fallback = fallbackFilenameTracks(videoUrl);
+            var fallback = fallbackFilenameTracks(currentRawTitle || videoUrl);
             applyProbedTracks(fallback);
         };
 
         xhr.onerror = function () {
             console.warn('[SunPlay.Player] Range request error, falling back to release tags');
-            var fallback = fallbackFilenameTracks(videoUrl);
+            var fallback = fallbackFilenameTracks(currentRawTitle || videoUrl);
             applyProbedTracks(fallback);
         };
 
         xhr.ontimeout = function () {
             console.warn('[SunPlay.Player] Range request timed out, falling back to release tags');
-            var fallback = fallbackFilenameTracks(videoUrl);
+            var fallback = fallbackFilenameTracks(currentRawTitle || videoUrl);
             applyProbedTracks(fallback);
         };
 
@@ -941,7 +1013,7 @@ SunPlay.Player = (function () {
             xhr.send();
         } catch (e) {
             console.warn('[SunPlay.Player] Failed to dispatch probe XHR:', e);
-            var fallback = fallbackFilenameTracks(videoUrl);
+            var fallback = fallbackFilenameTracks(currentRawTitle || videoUrl);
             applyProbedTracks(fallback);
         }
     }

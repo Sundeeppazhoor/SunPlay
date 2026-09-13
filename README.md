@@ -14,6 +14,14 @@ Pure native media player and streaming application for **LG webOS TV**, engineer
 
 ---
 
+## 📸 Screenshots & Interface
+
+| Home Screen & Instant QR Pairing | Send URL from Mobile Phone | In-Video Player HUD & Controls |
+| :---: | :---: | :---: |
+| ![SunPlay Home](image/sunPlay_UI.jpg) | ![Phone Send Link](image/ntfy_UI.jpg) | ![Player Controls](image/movie_stream_UI.jpg) |
+
+---
+
 ## 🏆 Credits & Acknowledgments
 
 The native media engine foundations and player architecture of **SunPlay** are inspired by and adapted from the open-source media player project [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) by **iqui27**.
