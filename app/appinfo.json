@@ -4,7 +4,7 @@
   "vendor": "SunPlay",
   "type": "web",
   "main": "index.html",
-  "title": "SunPlay Native",
+  "title": "SunPlay",
   "icon": "icons/icon-small.png",
   "largeIcon": "icons/icon-large.png",
   "iconColor": "#1a1a2e",
@@ -19,5 +19,5 @@
   "requiredFeatures": [
     "screen.size.all"
   ],
-  "appDescription": "SunPlay Native - High Performance Zero-Copy Media Player for webOS."
+  "appDescription": "SunPlay - High Performance Zero-Copy Media Player for webOS."
 }

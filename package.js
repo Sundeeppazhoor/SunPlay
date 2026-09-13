@@ -7,7 +7,7 @@ const appDir = path.join(baseDir, 'app');
 const distDir = path.join(baseDir, 'dist');
 
 console.log('===================================================');
-console.log('  Packaging SunPlay Native for LG webOS');
+console.log('  Packaging SunPlay for LG webOS');
 console.log('===================================================');
 
 if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });

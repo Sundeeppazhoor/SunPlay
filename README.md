@@ -1,4 +1,4 @@
-# SunPlay - Native
+# SunPlay
 
 Pure native C/C++ media player and streaming application for **LG webOS TV**, engineered for zero-copy hardware video decoding, dual video plane acceleration, and low-memory performance on 4K HDR Remux streams.
 
@@ -6,7 +6,7 @@ Pure native C/C++ media player and streaming application for **LG webOS TV**, en
 
 ## 🏆 Credits & Acknowledgments
 
-The core native media engine and playback architecture of **SunPlay Native** are proudly built upon and adapted from the open-source media player project [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) by **iqui27**.
+The core native media engine and playback architecture of **SunPlay** are proudly built upon and adapted from the open-source media player project [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) by **iqui27**.
 
 We express our sincere appreciation and credit to:
 - **iqui27** ([@iqui27](https://github.com/iqui27)) for architecting `nuvio-native-legacy` and pioneering native webOS uMS & libAcbAPI media plane integration.
@@ -55,7 +55,7 @@ All original underlying player routines, video subsystem integrations, and nativ
 ## Project Structure
 
 ```
-SunPlay - Native/
+SunPlay/
 ├── app/
 │   ├── appinfo.json             # App metadata (id: com.sunplay.native, type: native)
 │   ├── icon.png                 # App icon

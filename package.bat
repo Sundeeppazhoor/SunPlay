@@ -1,7 +1,7 @@
 @echo off
 setlocal
 echo ===================================================
-echo   SunPlay - Native IPK Packaging
+echo   SunPlay IPK Packaging
 echo ===================================================
 
 cd /d "%~dp0"
