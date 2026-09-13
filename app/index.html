@@ -37,7 +37,15 @@
                     </svg>
                     <h1 class="logo-text">SunPlay</h1>
                 </div>
-                <span class="version-badge">v1.0.0</span>
+                <div class="header-actions">
+                    <button id="clear-cache-btn" class="header-action-btn" data-focusable="true" title="Clear Cache & Memory">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                            <path d="M19.36 2.72l1.42 1.42-3.88 3.88-1.42-1.42 3.88-3.88zM6.6 6.6A8.006 8.006 0 0 0 4 12a8 8 0 1 0 13.9-5.4l-1.45 1.45A5.998 5.998 0 0 1 12 18a6 6 0 1 1 4.24-10.24l1.42-1.42z"/>
+                        </svg>
+                        <span>Clear Cache</span>
+                    </button>
+                    <span class="version-badge">v1.0.0</span>
+                </div>
             </div>
 
             <!-- URL Input Section -->
@@ -143,6 +151,10 @@
 
                 <div class="settings-group">
                     <h3 class="settings-group-title">Storage</h3>
+                    <div class="setting-item" data-focusable="true" id="setting-clear-cache-item">
+                        <span class="setting-label">Clear App Cache & Memory Buffers</span>
+                        <span class="setting-value" style="color:#ff8c00; font-weight:bold;">Clean Now</span>
+                    </div>
                     <div class="setting-item" data-focusable="true" id="setting-clear-history-item">
                         <span class="setting-label">Clear Playback History</span>
                         <span class="setting-value" style="color:#ff8c00; font-weight:bold;">Clear Now</span>

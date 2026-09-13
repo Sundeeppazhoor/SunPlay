@@ -65,8 +65,14 @@ SunPlay.Player = (function () {
     var sheetFocusCol = 0;
     var sheetFocusRow = 0;
 
-    // Resume tracking interval
+    // Resume tracking interval & fail-safe state
     var resumeTimer = null;
+    var isApplyingResume = false;
+    var resumeTimeout = null;
+
+    // Debounced seeking state (prevents webOS hardware decoder memory overflow)
+    var seekDebounceTimer = null;
+    var virtualSeekPos = null;
 
     /* ================= INITIALIZATION ================= */
 
@@ -258,8 +264,16 @@ SunPlay.Player = (function () {
             });
         }
 
+        var forceStart = (options && options.resume === false);
+
         // Auto-resume check
-        checkAndApplyAutoResume(url);
+        if (!forceStart) {
+            checkAndApplyAutoResume(url);
+        } else {
+            try {
+                localStorage.removeItem('sp_resume_' + encodeURIComponent(url));
+            } catch (e) {}
+        }
 
         // Show OSD briefly
         showOSD();
@@ -277,6 +291,17 @@ SunPlay.Player = (function () {
     function stop() {
         if (!video) return;
         
+        if (seekDebounceTimer) {
+            clearTimeout(seekDebounceTimer);
+            seekDebounceTimer = null;
+        }
+        virtualSeekPos = null;
+        isApplyingResume = false;
+        if (resumeTimeout) {
+            clearTimeout(resumeTimeout);
+            resumeTimeout = null;
+        }
+
         // Save current progress before stop
         saveCurrentProgress();
         stopResumeTracker();
@@ -290,6 +315,7 @@ SunPlay.Player = (function () {
         hideOSD();
         closeSheet();
         closeInfo();
+        closeSubSearchModal();
         if (subOverlay) {
             subOverlay.innerHTML = '';
             subOverlay.style.display = 'none';
@@ -319,14 +345,40 @@ SunPlay.Player = (function () {
     }
 
     function seekRelative(seconds) {
-        if (!video || !video.duration) return;
-        var target = Math.max(0, Math.min(video.duration, video.currentTime + seconds));
-        try {
-            video.currentTime = target;
-        } catch (e) {
-            console.warn('[SunPlay.Player] Seek error:', e);
+        if (!video) return;
+        var dur = video.duration || 0;
+        if (virtualSeekPos === null) {
+            virtualSeekPos = video.currentTime || 0;
         }
+        virtualSeekPos = dur > 0 ? Math.max(0, Math.min(dur, virtualSeekPos + seconds)) : Math.max(0, virtualSeekPos + seconds);
+
+        // Immediate responsive visual feedback
+        var currEl = document.getElementById('sp-time-curr');
+        if (currEl) currEl.innerText = formatTime(virtualSeekPos);
+
+        if (dur > 0) {
+            var pct = (virtualSeekPos / dur) * 100;
+            var progEl = document.getElementById('sp-seek-prog');
+            var headEl = document.getElementById('sp-seek-head');
+            if (progEl) progEl.style.width = pct + '%';
+            if (headEl) headEl.style.left = pct + '%';
+        }
+
         showOSD();
+
+        // 380ms Debounce: Only dispatch hardware seek after user stops pressing navigation
+        if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
+        seekDebounceTimer = setTimeout(function () {
+            if (video && virtualSeekPos !== null) {
+                try {
+                    video.currentTime = virtualSeekPos;
+                } catch (e) {
+                    console.warn('[SunPlay.Player] Debounced seek error:', e);
+                }
+                virtualSeekPos = null;
+                seekDebounceTimer = null;
+            }
+        }, 380);
     }
 
     function applyAspect() {
@@ -419,6 +471,12 @@ SunPlay.Player = (function () {
     function checkAndApplyAutoResume(url) {
         var pos = getSavedProgress(url);
         if (pos > 10) {
+            isApplyingResume = true;
+            if (resumeTimeout) clearTimeout(resumeTimeout);
+            resumeTimeout = setTimeout(function () {
+                isApplyingResume = false;
+            }, 6000);
+
             var onLoaded = function () {
                 video.removeEventListener('loadedmetadata', onLoaded);
                 try {
@@ -428,6 +486,7 @@ SunPlay.Player = (function () {
                     }
                 } catch (e) {
                     console.warn('[SunPlay.Player] Auto-resume failed on unseekable stream:', e);
+                    isApplyingResume = false;
                 }
             };
             video.addEventListener('loadedmetadata', onLoaded);
@@ -448,8 +507,11 @@ SunPlay.Player = (function () {
 
     /* ================= SUBTITLES & AUDIO ================= */
 
-    function fetchOpenSubtitles(title) {
-        if (!title || title === 'Stream') return;
+    function fetchOpenSubtitles(title, callback) {
+        if (!title || title === 'Stream') {
+            if (callback) callback(0);
+            return;
+        }
         console.log('[SunPlay.Player] Searching OpenSubtitles via Cinemeta for:', title);
 
         var searchUrl = 'https://v3-cinemeta.strem.io/catalog/movie/top/search=' + encodeURIComponent(title) + '.json';
@@ -471,6 +533,7 @@ SunPlay.Player = (function () {
             .then(function (imdbId) {
                 if (!imdbId) {
                     console.log('[SunPlay.Player] No IMDb ID matched for title:', title);
+                    if (callback) callback(0);
                     return;
                 }
                 console.log('[SunPlay.Player] Resolved IMDb ID:', imdbId);
@@ -478,30 +541,38 @@ SunPlay.Player = (function () {
                 return fetch(subUrl, { method: 'GET' })
                     .then(function (res) { return res.json(); })
                     .then(function (data) {
+                        var addedCount = 0;
                         if (data && data.subtitles && data.subtitles.length > 0) {
                             console.log('[SunPlay.Player] Found ' + data.subtitles.length + ' OpenSubtitles');
                             data.subtitles.forEach(function (s, idx) {
-                                var langCode = (s.lang || 'en').toLowerCase();
-                                var langLabel = langCode.toUpperCase();
-                                var fileName = s.subtitleFileName ? (' · ' + s.subtitleFileName.substring(0, 30)) : '';
-                                subtitleTracks.push({
-                                    id: 'os_' + idx,
-                                    type: 'opensubtitles',
-                                    label: langLabel + fileName,
-                                    language: langCode,
-                                    url: s.url,
-                                    cues: []
-                                });
+                                // Prevent duplicate track URLs
+                                var exists = subtitleTracks.some(function(t) { return t.url === s.url; });
+                                if (!exists) {
+                                    var langCode = (s.lang || 'en').toLowerCase();
+                                    var langLabel = langCode.toUpperCase();
+                                    var fileName = s.subtitleFileName ? (' · ' + s.subtitleFileName.substring(0, 30)) : '';
+                                    subtitleTracks.push({
+                                        id: 'os_' + (subtitleTracks.length + idx),
+                                        type: 'opensubtitles',
+                                        label: langLabel + fileName,
+                                        language: langCode,
+                                        url: s.url,
+                                        cues: []
+                                    });
+                                    addedCount++;
+                                }
                             });
                             updateSubtitleBadge();
                             if (sheetOpen === 'sub') {
                                 renderSubtitleSheetHTML();
                             }
                         }
+                        if (callback) callback(addedCount);
                     });
             })
             .catch(function (e) {
-                console.log('[SunPlay.Player] OpenSubtitles query skipped/offline', e);
+                console.log('[SunPlay.Player] OpenSubtitles query error', e);
+                if (callback) callback(0);
             });
     }
 
@@ -739,7 +810,8 @@ SunPlay.Player = (function () {
     }
 
     function renderSubtitleSheetHTML() {
-        var trackItems = '<div class="sp-sheet-item ' + (selectedSubtitleIndex === -1 ? 'active' : '') + '" data-row="0">Off</div>';
+        var searchBtn = '<div class="sp-sheet-item sp-search-sub-btn" data-row="-1" style="background: rgba(255, 140, 0, 0.15); border: 1px dashed rgba(255, 140, 0, 0.5); color: #ff8c00; font-weight: 700; margin-bottom: 8px;">🔍 Search OpenSubtitles by Title...</div>';
+        var trackItems = searchBtn + '<div class="sp-sheet-item ' + (selectedSubtitleIndex === -1 ? 'active' : '') + '" data-row="0">Off</div>';
         subtitleTracks.forEach(function (t, idx) {
             var activeClass = (selectedSubtitleIndex === idx) ? 'active' : '';
             trackItems += `<div class="sp-sheet-item ${activeClass}" data-row="${idx + 1}">${escapeHtml(t.label)}</div>`;
@@ -816,6 +888,7 @@ SunPlay.Player = (function () {
 
     function openInfoOverlay() {
         sheetOpen = 'info';
+        hideOSD();
         var dur = video && video.duration ? formatTime(video.duration) : '--:--';
         var cur = video && video.currentTime ? formatTime(video.currentTime) : '00:00';
         var bufLen = '0.0s';
@@ -825,19 +898,23 @@ SunPlay.Player = (function () {
 
         infoOverlay.innerHTML = `
             <div class="sp-info-card">
-                <h3>Stream Diagnostics (SunPlay Engine)</h3>
-                <div class="sp-info-line"><b>Title:</b> ${escapeHtml(displayTitle)}</div>
-                <div class="sp-info-line"><b>Resolution:</b> ${video.videoWidth || 1920} x ${video.videoHeight || 1080}</div>
-                <div class="sp-info-line"><b>Position:</b> ${cur} / ${dur}</div>
-                <div class="sp-info-line"><b>Buffer Ahead:</b> ${bufLen}</div>
-                <div class="sp-info-line"><b>Aspect Mode:</b> ${aspectModes[aspectIndex].label}</div>
-                <div class="sp-info-line"><b>Decoder Pipeline:</b> LG webOS Hardware Acceleration</div>
-                <div class="sp-info-line" style="word-break:break-all; font-size:13px; margin-top:8px; opacity:0.8;"><b>URL:</b> ${escapeHtml(currentUrl)}</div>
+                <h3>Stream Diagnostics</h3>
+                <div class="sp-info-line"><b style="flex-shrink:0;">Title:</b> <span style="word-break:break-word; flex:1;">${escapeHtml(displayTitle)}</span></div>
+                <div class="sp-info-line"><b>Resolution:</b> <span>${video.videoWidth || 1920} x ${video.videoHeight || 1080}</span></div>
+                <div class="sp-info-line"><b>Position:</b> <span>${cur} / ${dur}</span></div>
+                <div class="sp-info-line"><b>Buffer Ahead:</b> <span>${bufLen}</span></div>
+                <div class="sp-info-line"><b>Aspect Mode:</b> <span>${aspectModes[aspectIndex].label}</span></div>
+                <div class="sp-info-line"><b>Decoder Pipeline:</b> <span>LG webOS Hardware Acceleration</span></div>
+                <div class="sp-info-url"><b>URL:</b> ${escapeHtml(currentUrl)}</div>
                 <button class="sp-info-ok-btn" id="sp-info-ok">Close</button>
             </div>
         `;
         infoOverlay.style.display = 'flex';
-        showOSD();
+        var okBtn = document.getElementById('sp-info-ok');
+        if (okBtn) {
+            okBtn.addEventListener('click', closeInfo);
+            okBtn.focus();
+        }
     }
 
     function closeSheet() {
@@ -870,11 +947,83 @@ SunPlay.Player = (function () {
         }
     }
 
+    function openSubtitleSearchModal() {
+        var modal = document.getElementById('sp-sub-search-modal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'sp-sub-search-modal';
+            modal.className = 'sp-modal-overlay';
+            container.appendChild(modal);
+        }
+
+        modal.innerHTML = `
+            <div class="sp-modal-card" style="max-width: 650px;">
+                <div class="sp-modal-title">🔍 Search OpenSubtitles</div>
+                <div class="sp-modal-desc">Search subtitles by movie or series name (VLC-style):</div>
+                <div style="margin-bottom: 20px;">
+                    <input type="text" id="sp-sub-search-input" class="url-input" style="width: 100%; box-sizing: border-box; font-size: 22px; padding: 14px;" value="${escapeHtml(displayTitle)}" placeholder="Enter title e.g. Avatar Fire and Ash">
+                </div>
+                <div class="sp-modal-actions">
+                    <button class="sp-modal-btn primary focused" id="sp-sub-do-search">🔍 Search Subtitles</button>
+                    <button class="sp-modal-btn secondary" id="sp-sub-cancel-search">Cancel</button>
+                </div>
+                <div id="sp-sub-search-status" style="margin-top: 15px; font-size: 18px; color: #ff8c00; min-height: 24px;"></div>
+            </div>
+        `;
+        modal.style.display = 'flex';
+        
+        var input = document.getElementById('sp-sub-search-input');
+        var doBtn = document.getElementById('sp-sub-do-search');
+        var cancelBtn = document.getElementById('sp-sub-cancel-search');
+        var statusEl = document.getElementById('sp-sub-search-status');
+
+        function executeSearch() {
+            var q = input ? input.value.trim() : '';
+            if (!q) return;
+            if (statusEl) statusEl.innerText = 'Searching OpenSubtitles catalog for "' + q + '"...';
+            fetchOpenSubtitles(q, function (count) {
+                if (count > 0) {
+                    if (statusEl) statusEl.innerText = 'Found ' + count + ' new subtitles! Added to list.';
+                    setTimeout(function () {
+                        closeSubSearchModal();
+                        renderSubtitleSheetHTML();
+                    }, 900);
+                } else {
+                    if (statusEl) statusEl.innerText = 'No subtitles found for "' + q + '". Try searching a different title or year.';
+                }
+            });
+        }
+
+        doBtn.addEventListener('click', executeSearch);
+        cancelBtn.addEventListener('click', closeSubSearchModal);
+        
+        input.addEventListener('keydown', function (e) {
+            if (e.keyCode === 13) {
+                e.preventDefault();
+                executeSearch();
+            }
+        });
+
+        // Focus search button initially (avoiding virtual keyboard pop)
+        doBtn.focus();
+    }
+
+    function closeSubSearchModal() {
+        var modal = document.getElementById('sp-sub-search-modal');
+        if (modal) modal.style.display = 'none';
+        if (sheetOpen === 'sub') {
+            highlightSheetFocus();
+        }
+    }
+
     /* ================= EVENT ATTACHMENTS ================= */
 
     function attachMediaEvents() {
         video.addEventListener('timeupdate', function () {
             if (!video.duration) return;
+            // Prevent UI stutter while user is actively debouncing seek jumps
+            if (virtualSeekPos !== null) return;
+
             var curr = video.currentTime;
             var dur = video.duration;
 
@@ -974,6 +1123,27 @@ SunPlay.Player = (function () {
             var err = video.error;
             var msg = err ? `Error code ${err.code}: ${err.message}` : 'Playback error';
             console.error('[SunPlay.Player] Error:', msg);
+
+            // Unseekable / Range Error Recovery: If error happened during resume seek, restart cleanly from start!
+            if (isApplyingResume) {
+                isApplyingResume = false;
+                console.warn('[SunPlay.Player] Stream failed on resume seek. Recovering from start...');
+                try {
+                    localStorage.removeItem('sp_resume_' + encodeURIComponent(currentUrl));
+                    video.removeAttribute('src');
+                    video.load();
+                    video.src = currentUrl;
+                    video.currentTime = 0;
+                    video.play();
+                    if (SunPlay.App && SunPlay.App.showToast) {
+                        SunPlay.App.showToast('Stream is download-only / non-seekable. Playing from start.');
+                    }
+                    return;
+                } catch (recErr) {
+                    console.error('[SunPlay.Player] Fallback error:', recErr);
+                }
+            }
+
             if (SunPlay.App && SunPlay.App.showToast) {
                 SunPlay.App.showToast('Playback failed. Check URL or stream format.');
             }
@@ -1012,10 +1182,16 @@ SunPlay.Player = (function () {
             }
 
             // Back button handling (461 webOS, 27 Escape, 8 Backspace)
-            // Streamlined: 1 click closes any open sheet. If no sheet is open, 1 click exits cleanly to home!
+            // Streamlined: 1 click closes any open modal or sheet. If none open, exits cleanly to home!
             if (key === 461 || key === 27 || key === 8) {
                 e.preventDefault();
                 e.stopPropagation();
+
+                var subSearchModal = document.getElementById('sp-sub-search-modal');
+                if (subSearchModal && subSearchModal.style.display !== 'none') {
+                    closeSubSearchModal();
+                    return;
+                }
 
                 if (sheetOpen === 'info') {
                     closeInfo();
@@ -1028,7 +1204,15 @@ SunPlay.Player = (function () {
                 return;
             }
 
-            // If a sheet is open, handle sheet navigation
+            // If a modal or sheet is open, handle navigation
+            var subModal = document.getElementById('sp-sub-search-modal');
+            if (subModal && subModal.style.display !== 'none') {
+                if (key === 27 || key === 461) {
+                    closeSubSearchModal();
+                }
+                return;
+            }
+
             if (sheetOpen === 'info') {
                 if (key === 13) closeInfo();
                 return;
@@ -1118,7 +1302,8 @@ SunPlay.Player = (function () {
     function handleSheetKey(key, e) {
         if (key === 38) { // Up
             e.preventDefault();
-            sheetFocusRow = Math.max(0, sheetFocusRow - 1);
+            var minRow = (sheetOpen === 'sub' && sheetFocusCol === 0) ? -1 : 0;
+            sheetFocusRow = Math.max(minRow, sheetFocusRow - 1);
             highlightSheetFocus();
         } else if (key === 40) { // Down
             e.preventDefault();
@@ -1142,8 +1327,12 @@ SunPlay.Player = (function () {
             e.preventDefault();
             if (sheetOpen === 'sub') {
                 if (sheetFocusCol === 0) {
-                    selectSubtitle(sheetFocusRow - 1);
-                    closeSheet();
+                    if (sheetFocusRow === -1) {
+                        openSubtitleSearchModal();
+                    } else {
+                        selectSubtitle(sheetFocusRow - 1);
+                        closeSheet();
+                    }
                 } else {
                     cycleSubtitleStyle(sheetFocusRow);
                     renderSubtitleSheetHTML();
@@ -1237,6 +1426,16 @@ SunPlay.Player = (function () {
         seekRelative: seekRelative,
         showOSD: showOSD,
         hideOSD: hideOSD,
-        cleanStreamTitle: cleanStreamTitle
+        cleanStreamTitle: cleanStreamTitle,
+        getSavedProgress: getSavedProgress,
+        clearCache: function () {
+            subtitleTracks = [];
+            audioTracks = [];
+            activeCues = [];
+            if (subOverlay) {
+                subOverlay.innerHTML = '';
+                subOverlay.style.display = 'none';
+            }
+        }
     };
 })();

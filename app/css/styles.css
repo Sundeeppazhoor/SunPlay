@@ -1209,23 +1209,53 @@ html, body {
 
 .sp-info-card {
     background: #14141c;
-    border: 2px solid #282834;
-    border-radius: 16px;
-    padding: 36px;
-    max-width: 700px;
-    width: 100%;
+    border: 2px solid #ff8c00;
+    border-radius: 20px;
+    padding: 36px 44px;
+    max-width: 850px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9);
+    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .sp-info-card h3 {
-    font-size: 28px;
+    font-size: 30px;
+    font-weight: 700;
     color: #ff8c00;
-    margin-bottom: 20px;
+    margin-bottom: 22px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 12px;
 }
 
 .sp-info-line {
     font-size: 20px;
     color: #ccc;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
+    display: flex;
+    gap: 12px;
+    line-height: 1.4;
+    word-break: break-word;
+    overflow-wrap: break-word;
+}
+
+.sp-info-line b {
+    color: #fff;
+    min-width: 140px;
+    flex-shrink: 0;
+}
+
+.sp-info-url {
+    display: block;
+    word-break: break-all;
+    font-size: 14px;
+    color: #aaa;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-top: 12px;
+    max-height: 80px;
+    overflow-y: auto;
 }
 
 .sp-info-ok-btn {
@@ -1234,9 +1264,137 @@ html, body {
     border: none;
     border-radius: 8px;
     color: #fff;
-    padding: 12px 32px;
+    padding: 12px 36px;
     font-size: 20px;
     font-weight: 700;
     cursor: pointer;
+}
+
+.sp-info-ok-btn:focus {
+    background: #ffa500;
+    outline: 3px solid #ffd700;
+}
+
+/* === MODAL OVERLAYS (History Choices & Subtitle Search) === */
+.sp-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; width: 1920px; height: 1080px;
+    background: rgba(5, 5, 12, 0.85);
+    backdrop-filter: blur(8px);
+    z-index: 250;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.sp-modal-card {
+    background: #151522;
+    border: 2px solid rgba(255, 140, 0, 0.4);
+    border-radius: 24px;
+    padding: 40px;
+    max-width: 750px;
+    width: 90%;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.9);
+    display: flex;
+    flex-direction: column;
+}
+
+.sp-modal-title {
+    font-size: 32px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 12px;
+    word-break: break-word;
+}
+
+.sp-modal-desc {
+    font-size: 20px;
+    color: #aaa;
+    line-height: 1.4;
+    margin-bottom: 28px;
+}
+
+.sp-modal-desc b {
+    color: #ff8c00;
+}
+
+.sp-modal-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.sp-modal-btn {
+    padding: 16px 28px;
+    border-radius: 12px;
+    font-size: 22px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.15s ease;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.sp-modal-btn.primary {
+    background: linear-gradient(135deg, #ff8c00, #e67300);
+    color: #fff;
+}
+
+.sp-modal-btn.secondary {
+    background: rgba(255, 255, 255, 0.08);
+    color: #eee;
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.sp-modal-btn.danger {
+    background: rgba(220, 53, 69, 0.15);
+    color: #ff6b6b;
+    border-color: rgba(220, 53, 69, 0.3);
+}
+
+.sp-modal-btn.text {
+    background: transparent;
+    color: #888;
+    justify-content: center;
+}
+
+.sp-modal-btn:focus,
+.sp-modal-btn.focused {
+    transform: scale(1.02);
+    border-color: #ffd700;
+    box-shadow: 0 0 20px rgba(255, 140, 0, 0.5);
+    outline: none;
+}
+
+/* Header actions (Clear Cache button) */
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.header-action-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    color: #ccc;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.header-action-btn:focus {
+    background: rgba(255, 140, 0, 0.2);
+    border-color: #ff8c00;
+    color: #fff;
+    outline: none;
 }
 

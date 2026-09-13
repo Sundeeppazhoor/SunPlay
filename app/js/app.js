@@ -59,10 +59,10 @@ SunPlay.App = (function () {
         // Load history
         renderHistory();
 
-        // Focus initial element
-        var urlInput = document.getElementById('url-input');
-        if (urlInput) {
-            urlInput.focus();
+        // Focus initial element (Focus Play button to avoid virtual keyboard auto-pop)
+        var playBtn = document.getElementById('play-btn');
+        if (playBtn) {
+            playBtn.focus();
         }
 
         // Device info
@@ -98,8 +98,8 @@ SunPlay.App = (function () {
             isPlayerActive = false;
             if (homeScreen) homeScreen.style.display = '';
             setTimeout(function () {
-                var urlInput = document.getElementById('url-input');
-                if (urlInput) urlInput.focus();
+                var playBtn = document.getElementById('play-btn');
+                if (playBtn) playBtn.focus();
             }, 100);
         } else if (screenId === 'player') {
             isPlayerActive = true;
@@ -149,6 +149,12 @@ SunPlay.App = (function () {
         }
 
 
+        // Clear Cache Header Button
+        var clearCacheBtn = document.getElementById('clear-cache-btn');
+        if (clearCacheBtn) {
+            clearCacheBtn.addEventListener('click', clearAppCache);
+        }
+
         // Start Server / Cloud Pair button
         var startServerBtn = document.getElementById('start-server-btn');
         if (startServerBtn) {
@@ -161,9 +167,9 @@ SunPlay.App = (function () {
                     SunPlay.QR.init(document.getElementById('qr-container'));
                 }
                 
-                // Auto focus down since this button disappeared
-                var urlInput = document.getElementById('url-input');
-                if (urlInput) urlInput.focus();
+                // Focus play button instead of urlInput to avoid virtual keyboard
+                var playBtn = document.getElementById('play-btn');
+                if (playBtn) playBtn.focus();
             });
         }
 
@@ -244,10 +250,10 @@ SunPlay.App = (function () {
     /**
      * Launch playback using the high-performance SunPlay Native Player Engine
      */
-    function launchPlayer(url, title) {
+    function launchPlayer(url, title, options) {
         showScreen('player');
         if (SunPlay.Player) {
-            SunPlay.Player.play(url, { title: title });
+            SunPlay.Player.play(url, Object.assign({ title: title }, options || {}));
         }
     }
 
@@ -316,19 +322,154 @@ SunPlay.App = (function () {
                 '<div class="history-card-title">' + escapeHtml(displayTitle) + '</div>' +
                 '<div class="history-card-meta">' + timeAgo + '</div>';
 
-            card.addEventListener('click', function () {
-                playUrl(item.url);
-            });
+            var handleCardSelect = function () {
+                var savedPos = 0;
+                if (SunPlay.Player && SunPlay.Player.getSavedProgress) {
+                    savedPos = SunPlay.Player.getSavedProgress(item.url);
+                } else {
+                    try {
+                        savedPos = parseFloat(localStorage.getItem('sp_resume_' + encodeURIComponent(item.url))) || 0;
+                    } catch (e) {}
+                }
+
+                if (savedPos > 10) {
+                    showHistoryChoiceModal(item, savedPos);
+                } else {
+                    playUrl(item.url);
+                }
+            };
+
+            card.addEventListener('click', handleCardSelect);
             card.addEventListener('keydown', function (e) {
                 if (e.keyCode === 13) { // Enter
                     e.preventDefault();
                     e.stopPropagation();
-                    playUrl(item.url);
+                    handleCardSelect();
                 }
             });
 
             list.appendChild(card);
         });
+    }
+
+    function showHistoryChoiceModal(item, savedPos) {
+        var modal = document.getElementById('sp-history-choice-modal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'sp-history-choice-modal';
+            modal.className = 'sp-modal-overlay';
+            document.body.appendChild(modal);
+        }
+
+        var formattedTime = formatTime(savedPos);
+        modal.innerHTML = `
+            <div class="sp-modal-card">
+                <div class="sp-modal-title">${escapeHtml(item.title || 'Stream')}</div>
+                <div class="sp-modal-desc">Saved playback progress found at <b>${formattedTime}</b>. How would you like to play?</div>
+                <div class="sp-modal-actions">
+                    <button class="sp-modal-btn primary focused" id="sp-hist-resume">▶ Resume from ${formattedTime}</button>
+                    <button class="sp-modal-btn secondary" id="sp-hist-start">↺ Start from Beginning</button>
+                    <button class="sp-modal-btn danger" id="sp-hist-delete">🗑 Remove from History</button>
+                    <button class="sp-modal-btn text" id="sp-hist-cancel">Cancel</button>
+                </div>
+            </div>
+        `;
+        modal.style.display = 'flex';
+
+        var resumeBtn = document.getElementById('sp-hist-resume');
+        var startBtn = document.getElementById('sp-hist-start');
+        var deleteBtn = document.getElementById('sp-hist-delete');
+        var cancelBtn = document.getElementById('sp-hist-cancel');
+
+        function closeModal() {
+            if (modal) modal.style.display = 'none';
+        }
+
+        resumeBtn.addEventListener('click', function () {
+            closeModal();
+            launchPlayer(item.url, item.title, { resume: true });
+        });
+
+        startBtn.addEventListener('click', function () {
+            closeModal();
+            try {
+                localStorage.removeItem('sp_resume_' + encodeURIComponent(item.url));
+            } catch (e) {}
+            launchPlayer(item.url, item.title, { resume: false });
+        });
+
+        deleteBtn.addEventListener('click', function () {
+            closeModal();
+            try {
+                localStorage.removeItem('sp_resume_' + encodeURIComponent(item.url));
+            } catch (e) {}
+            var history = getHistory().filter(function (h) { return h.url !== item.url; });
+            if (SunPlay.Utils && SunPlay.Utils.storage) {
+                SunPlay.Utils.storage.set('sunplay_history', history);
+            }
+            renderHistory();
+            showToast('Removed from history');
+        });
+
+        cancelBtn.addEventListener('click', closeModal);
+
+        var buttons = [resumeBtn, startBtn, deleteBtn, cancelBtn];
+        var focusIdx = 0;
+        resumeBtn.focus();
+
+        modal.onkeydown = function (e) {
+            var k = e.keyCode;
+            if (k === 38) { // Up
+                e.preventDefault();
+                focusIdx = Math.max(0, focusIdx - 1);
+                buttons[focusIdx].focus();
+            } else if (k === 40) { // Down
+                e.preventDefault();
+                focusIdx = Math.min(buttons.length - 1, focusIdx + 1);
+                buttons[focusIdx].focus();
+            } else if (k === 461 || k === 27 || k === 8) { // Back
+                e.preventDefault();
+                e.stopPropagation();
+                closeModal();
+            }
+        };
+    }
+
+    function clearAppCache() {
+        try {
+            var count = 0;
+            var keysToRemove = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && (k.startsWith('sp_resume_') || k.startsWith('sp_cache_'))) {
+                    keysToRemove.push(k);
+                }
+            }
+            keysToRemove.forEach(function (k) {
+                localStorage.removeItem(k);
+                count++;
+            });
+
+            if (SunPlay.Player && SunPlay.Player.clearCache) {
+                SunPlay.Player.clearCache();
+            }
+
+            showToast('Cache & Memory Buffers Cleared!');
+        } catch (e) {
+            console.error('[SunPlay] Clear cache error:', e);
+            showToast('Cache cleared');
+        }
+    }
+
+    function formatTime(s) {
+        if (!s || isNaN(s)) return '00:00';
+        var h = Math.floor(s / 3600);
+        var m = Math.floor((s % 3600) / 60);
+        var sec = Math.floor(s % 60);
+        if (h > 0) {
+            return (h < 10 ? '0' + h : h) + ':' + (m < 10 ? '0' + m : m) + ':' + (sec < 10 ? '0' + sec : sec);
+        }
+        return (m < 10 ? '0' + m : m) + ':' + (sec < 10 ? '0' + sec : sec);
     }
 
     function getTimeAgo(timestamp) {
@@ -434,8 +575,20 @@ SunPlay.App = (function () {
 
         // 1. Explicit deterministic grid transitions for Home screen
         if (currentScreen === 'home') {
-            if (active.id === 'url-input') {
-                if (direction === 'right') {
+            if (active.id === 'clear-cache-btn') {
+                if (direction === 'down') {
+                    var pBtn = document.getElementById('play-btn');
+                    if (pBtn) { pBtn.focus(); return; }
+                } else if (direction === 'left') {
+                    var uInp = document.getElementById('url-input');
+                    if (uInp) { uInp.focus(); return; }
+                }
+                return;
+            } else if (active.id === 'url-input') {
+                if (direction === 'up') {
+                    var cBtn = document.getElementById('clear-cache-btn');
+                    if (cBtn) { cBtn.focus(); return; }
+                } else if (direction === 'right') {
                     var pBtn = document.getElementById('play-btn');
                     if (pBtn) { pBtn.focus(); return; }
                 } else if (direction === 'down') {
@@ -445,7 +598,10 @@ SunPlay.App = (function () {
                     if (sBtn) { sBtn.focus(); return; }
                 }
             } else if (active.id === 'play-btn') {
-                if (direction === 'left' || direction === 'up') {
+                if (direction === 'up') {
+                    var cBtn = document.getElementById('clear-cache-btn');
+                    if (cBtn) { cBtn.focus(); return; }
+                } else if (direction === 'left') {
                     var uInp = document.getElementById('url-input');
                     if (uInp) { uInp.focus(); return; }
                 } else if (direction === 'down') {
@@ -598,6 +754,15 @@ SunPlay.App = (function () {
                     }
                 });
             })(settingItems[i]);
+        }
+
+        // Clear App Cache item in settings
+        var clearCacheItem = document.getElementById('setting-clear-cache-item');
+        if (clearCacheItem) {
+            clearCacheItem.addEventListener('click', clearAppCache);
+            clearCacheItem.addEventListener('keydown', function (e) {
+                if (e.keyCode === 13) clearAppCache();
+            });
         }
 
         // Clear History item in settings
