@@ -18,7 +18,8 @@ fs.readdirSync(distDir).forEach(f => {
 });
 
 console.log('[1/2] Packaging app directory with ares-package...');
-cp.execSync('ares-package "' + appDir + '" -o "' + distDir + '" --no-minify', { stdio: 'inherit', shell: 'cmd.exe' });
+const isWin = process.platform === 'win32';
+cp.execSync('ares-package "' + appDir + '" -o "' + distDir + '" --no-minify', { stdio: 'inherit', shell: isWin ? 'cmd.exe' : '/bin/sh' });
 
 const ipkName = fs.readdirSync(distDir).find(f => f.endsWith('.ipk'));
 if (!ipkName) {

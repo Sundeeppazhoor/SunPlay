@@ -103,12 +103,36 @@ html, body {
     letter-spacing: 2px;
 }
 
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.author-credit {
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.65);
+    background: rgba(255, 140, 0, 0.08);
+    border: 1px solid rgba(255, 140, 0, 0.2);
+    padding: 4px 12px;
+    border-radius: 12px;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+.author-credit .author-name {
+    color: #ff8c00;
+    font-weight: 600;
+}
+
 .version-badge {
-    font-size: 16px;
-    color: #666;
+    font-size: 14px;
+    color: #888;
     background: rgba(255, 255, 255, 0.05);
     padding: 4px 12px;
     border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
 }
 
 /* URL Input */

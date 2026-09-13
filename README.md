@@ -1,5 +1,9 @@
 # SunPlay
 
+[![Download IPK](https://img.shields.io/github/v/release/Sundeeppazhoor/SunPlay?label=Download%20IPK&logo=github&color=orange)](https://github.com/Sundeeppazhoor/SunPlay/releases/latest)
+[![Author](https://img.shields.io/badge/Made%20with-%E2%9D%A4%EF%B8%8F%20by%20Sundeep%20Pazhoor-ff8c00.svg)](https://github.com/Sundeeppazhoor)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 Pure native media player and streaming application for **LG webOS TV**, engineered for zero-copy hardware video decoding, container header probing, and low-memory performance on 4K HDR Remux streams.
 
 > [!WARNING]
@@ -68,7 +72,8 @@ While the video is playing, press **Enter / OK** or any D-pad arrow on your Magi
 
 ## 📦 Installing SunPlay on Your LG TV
 
-Install the ready-to-run package (`dist/com.sunplay.native_1.0.0_all.ipk`) on your LG TV using your preferred installation app on Windows, macOS, or Mobile (Android).
+1. Download the latest ready-to-run `.ipk` package directly from **[GitHub Releases](https://github.com/Sundeeppazhoor/SunPlay/releases/latest)** (e.g. `com.sunplay.native_1.0.0_all.ipk`).
+2. Install it on your LG TV using your preferred installation app on Windows, macOS, or Mobile (Android).
 
 For detailed instructions and official guides:
 - **Official LG webOS Developer Guide**: [Installing webOS TV Apps](https://webostv.developer.lge.com/develop/getting-started/app-install)
