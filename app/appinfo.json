@@ -12,6 +12,8 @@
   "resolution": "1920x1080",
   "disableBackHistoryAPI": true,
   "handlesRelaunch": true,
+  "trustLevel": "trusted",
+  "allowCrossDomain": true,
   "requiredPermissions": [
     "all"
   ],

@@ -287,7 +287,10 @@ SunPlay.Player = (function () {
         // 2. Probe for companion sidecar subtitles (.srt, .vtt)
         probeSidecarSubtitles(url);
 
-        // 3. Start auto-resume tracker
+        // 3. Probe embedded container tracks (MKV/MP4 EBML header + release tags)
+        probeContainerTracks(url);
+
+        // 4. Start auto-resume tracker
         startResumeTracker();
     }
 
@@ -611,6 +614,338 @@ SunPlay.Player = (function () {
         });
     }
 
+    /* ================= MKV / CONTAINER TRACK PROBING ================= */
+
+    var langLookupTable = {
+        'hin': 'Hindi', 'hi': 'Hindi',
+        'tam': 'Tamil', 'ta': 'Tamil',
+        'tel': 'Telugu', 'te': 'Telugu',
+        'eng': 'English', 'en': 'English',
+        'spa': 'Spanish', 'es': 'Spanish',
+        'fre': 'French', 'fra': 'French', 'fr': 'French',
+        'ger': 'German', 'deu': 'German', 'de': 'German',
+        'ita': 'Italian', 'it': 'Italian',
+        'por': 'Portuguese', 'pt': 'Portuguese',
+        'rus': 'Russian', 'ru': 'Russian',
+        'ara': 'Arabic', 'ar': 'Arabic',
+        'chi': 'Chinese', 'zho': 'Chinese', 'zh': 'Chinese',
+        'jpn': 'Japanese', 'ja': 'Japanese',
+        'kor': 'Korean', 'ko': 'Korean',
+        'mal': 'Malayalam', 'ml': 'Malayalam',
+        'kan': 'Kannada', 'kn': 'Kannada',
+        'ben': 'Bengali', 'bn': 'Bengali',
+        'pan': 'Punjabi', 'pa': 'Punjabi',
+        'mar': 'Marathi', 'mr': 'Marathi',
+        'guj': 'Gujarati', 'gu': 'Gujarati',
+        'und': 'Undetermined'
+    };
+
+    function resolveLangInfo(langCode, trackName) {
+        if (langCode && langCode !== 'und') {
+            var lCode = langCode.toLowerCase();
+            if (langLookupTable[lCode]) {
+                return { code: lCode, name: langLookupTable[lCode] };
+            }
+        }
+        if (trackName) {
+            var n = trackName.toLowerCase();
+            var keys = Object.keys(langLookupTable);
+            for (var i = 0; i < keys.length; i++) {
+                var langName = langLookupTable[keys[i]];
+                if (n.indexOf(langName.toLowerCase()) !== -1) {
+                    return { code: keys[i], name: langName };
+                }
+            }
+        }
+        return { code: (langCode || 'und'), name: (langCode ? langCode.toUpperCase() : 'Track') };
+    }
+
+    function parseMkvHeader(bytes) {
+        function readVint(b, offset) {
+            if (offset >= b.length) return null;
+            var b0 = b[offset];
+            var len = 1;
+            var mask = 0x80;
+            while (len <= 8 && !(b0 & mask)) {
+                len++;
+                mask >>= 1;
+            }
+            if (len > 8 || offset + len > b.length) return null;
+            var val = b0 & (~mask);
+            for (var i = 1; i < len; i++) {
+                val = (val * 256) + b[offset + i];
+            }
+            return { length: len, value: val };
+        }
+
+        function readElementId(b, offset) {
+            if (offset >= b.length) return null;
+            var b0 = b[offset];
+            var len = 1;
+            var mask = 0x80;
+            while (len <= 4 && !(b0 & mask)) {
+                len++;
+                mask >>= 1;
+            }
+            if (len > 4 || offset + len > b.length) return null;
+            var id = 0;
+            for (var i = 0; i < len; i++) {
+                id = (id * 256) + b[offset + i];
+            }
+            return { length: len, id: id >>> 0 };
+        }
+
+        function readString(b, start, end) {
+            var str = '';
+            for (var i = start; i < end; i++) {
+                str += String.fromCharCode(b[i]);
+            }
+            try {
+                return decodeURIComponent(escape(str));
+            } catch (e) {
+                return str;
+            }
+        }
+
+        // Find 0x1654AE6B (Tracks)
+        var tIdx = -1;
+        for (var p = 0; p < bytes.length - 8; p++) {
+            if (bytes[p] === 0x16 && bytes[p + 1] === 0x54 && bytes[p + 2] === 0xAE && bytes[p + 3] === 0x6B) {
+                var s = readVint(bytes, p + 4);
+                if (s) {
+                    var nextEl = readElementId(bytes, p + 4 + s.length);
+                    if (nextEl && nextEl.id === 0xAE) {
+                        tIdx = p;
+                        break;
+                    }
+                }
+            }
+        }
+        if (tIdx === -1) return { audio: [], subtitles: [] };
+
+        var cur = tIdx + 4;
+        var tLen = readVint(bytes, cur);
+        if (!tLen) return { audio: [], subtitles: [] };
+        cur += tLen.length;
+        var endTracks = Math.min(bytes.length, cur + tLen.value);
+
+        var audio = [];
+        var subtitles = [];
+
+        while (cur < endTracks) {
+            var el = readElementId(bytes, cur);
+            if (!el) break;
+            cur += el.length;
+            var size = readVint(bytes, cur);
+            if (!size) break;
+            cur += size.length;
+            var entryEnd = Math.min(endTracks, cur + size.value);
+
+            if (el.id === 0xAE) { // TrackEntry
+                var track = { number: 0, type: 0, codec: '', name: '', language: 'und' };
+                var eCur = cur;
+                while (eCur < entryEnd) {
+                    var subEl = readElementId(bytes, eCur);
+                    if (!subEl) break;
+                    eCur += subEl.length;
+                    var subSize = readVint(bytes, eCur);
+                    if (!subSize) break;
+                    eCur += subSize.length;
+                    var valEnd = Math.min(entryEnd, eCur + subSize.value);
+
+                    if (subEl.id === 0xD7) { // TrackNumber
+                        var num = 0;
+                        for (var k = eCur; k < valEnd; k++) num = (num * 256) + bytes[k];
+                        track.number = num;
+                    } else if (subEl.id === 0x83) { // TrackType
+                        var typ = 0;
+                        for (var m = eCur; m < valEnd; m++) typ = (typ * 256) + bytes[m];
+                        track.type = typ;
+                    } else if (subEl.id === 0x86) { // CodecID
+                        track.codec = readString(bytes, eCur, valEnd);
+                    } else if (subEl.id === 0x536E) { // Name
+                        track.name = readString(bytes, eCur, valEnd);
+                    } else if (subEl.id === 0x22B59C) { // Language
+                        track.language = readString(bytes, eCur, valEnd);
+                    }
+                    eCur = valEnd;
+                }
+
+                if (track.type === 17) { // Subtitle
+                    subtitles.push(track);
+                } else if (track.type === 2) { // Audio
+                    audio.push(track);
+                }
+            }
+            cur = entryEnd;
+        }
+        return { audio: audio, subtitles: subtitles };
+    }
+
+    function fallbackFilenameTracks(rawUrl) {
+        try {
+            var str = decodeURIComponent(rawUrl.split('?')[0].split('/').pop());
+            var audio = [];
+            var subtitles = [];
+            var tagMatch = str.match(/\[(.*?)\]/);
+            var tagContent = tagMatch ? tagMatch[1] : str;
+
+            var languages = [
+                { key: 'Hindi', code: 'hin', name: 'Hindi' },
+                { key: 'Tamil', code: 'tam', name: 'Tamil' },
+                { key: 'Telugu', code: 'tel', name: 'Telugu' },
+                { key: 'English', code: 'eng', name: 'English' },
+                { key: 'Malayalam', code: 'mal', name: 'Malayalam' },
+                { key: 'Kannada', code: 'kan', name: 'Kannada' },
+                { key: 'Bengali', code: 'ben', name: 'Bengali' },
+                { key: 'Spanish', code: 'spa', name: 'Spanish' },
+                { key: 'French', code: 'fre', name: 'French' },
+                { key: 'German', code: 'ger', name: 'German' },
+                { key: 'Japanese', code: 'jpn', name: 'Japanese' }
+            ];
+
+            languages.forEach(function (l) {
+                var re = new RegExp('\\b' + l.key + '\\b', 'i');
+                if (re.test(tagContent)) {
+                    audio.push({
+                        number: audio.length + 1,
+                        type: 2,
+                        codec: 'A_UNKNOWN',
+                        name: l.name + ' Audio',
+                        language: l.code
+                    });
+                }
+            });
+
+            if (/\b(ESub|ESubs|Sub|Subs|English Sub|Multi Sub)\b/i.test(str)) {
+                subtitles.push({
+                    number: 1,
+                    type: 17,
+                    codec: 'S_TEXT/UTF8',
+                    name: 'English [ESub]',
+                    language: 'eng'
+                });
+            }
+
+            return { audio: audio, subtitles: subtitles };
+        } catch (e) {
+            return { audio: [], subtitles: [] };
+        }
+    }
+
+    function applyProbedTracks(result) {
+        if (!result) return;
+        var subAdded = 0;
+
+        // Apply subtitles
+        if (result.subtitles && result.subtitles.length > 0) {
+            result.subtitles.forEach(function (s) {
+                var exists = subtitleTracks.some(function (t) {
+                    return t.type === 'embedded_mkv' && t.trackNumber === s.number;
+                });
+                if (!exists) {
+                    var lInfo = resolveLangInfo(s.language, s.name);
+                    var isBmp = (s.codec.indexOf('PGS') !== -1 || s.codec.indexOf('VOBSUB') !== -1);
+                    var cleanCodec = s.codec.replace('S_', '').replace('TEXT/', '');
+                    var badge = isBmp ? 'BluRay PGS Bitmap' : cleanCodec;
+                    var labelText = s.name ? s.name : (lInfo.name + ' [' + badge + ']');
+
+                    subtitleTracks.unshift({
+                        id: 'mkv_sub_' + s.number,
+                        type: 'embedded_mkv',
+                        trackNumber: s.number,
+                        trackIndex: s.number - 1,
+                        codec: s.codec,
+                        isBitmap: isBmp,
+                        label: 'Embedded · ' + labelText,
+                        language: lInfo.code,
+                        langName: lInfo.name
+                    });
+                    subAdded++;
+                }
+            });
+            if (subAdded > 0) {
+                console.log('[SunPlay.Player] Probed ' + subAdded + ' embedded MKV subtitle tracks');
+                updateSubtitleBadge();
+                if (sheetOpen === 'sub') {
+                    renderSubtitleSheetHTML();
+                }
+            }
+        }
+
+        // Apply audio tracks if video.audioTracks has <= 1 track
+        if (result.audio && result.audio.length > 0 && audioTracks.length <= 1) {
+            audioTracks = [];
+            result.audio.forEach(function (a) {
+                var lInfo = resolveLangInfo(a.language, a.name);
+                var codecClean = a.codec.replace('A_', '').replace('/', ' ');
+                var lbl = a.name ? a.name : (lInfo.name + ' (' + codecClean + ')');
+                audioTracks.push({
+                    id: 'mkv_aud_' + a.number,
+                    type: 'embedded_mkv',
+                    trackNumber: a.number,
+                    codec: a.codec,
+                    label: lbl.toUpperCase(),
+                    language: lInfo.code
+                });
+            });
+            var audioBadge = document.getElementById('sp-badge-audio');
+            if (audioBadge) audioBadge.innerText = audioTracks.length + ' Tracks';
+            if (sheetOpen === 'audio') {
+                openAudioSheet();
+            }
+        }
+    }
+
+    function probeContainerTracks(videoUrl) {
+        if (!videoUrl || videoUrl.indexOf('http') !== 0) return;
+
+        console.log('[SunPlay.Player] Probing embedded container tracks via HTTP Range header...');
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', videoUrl, true);
+        xhr.setRequestHeader('Range', 'bytes=0-393215');
+        xhr.responseType = 'arraybuffer';
+        xhr.timeout = 8000;
+
+        xhr.onload = function () {
+            if (xhr.status === 200 || xhr.status === 206) {
+                try {
+                    var u8 = new Uint8Array(xhr.response);
+                    var result = parseMkvHeader(u8);
+                    if (result && (result.subtitles.length > 0 || result.audio.length > 0)) {
+                        applyProbedTracks(result);
+                        return;
+                    }
+                } catch (parseErr) {
+                    console.warn('[SunPlay.Player] MKV header parsing error:', parseErr);
+                }
+            }
+            // Fallback to filename analysis
+            var fallback = fallbackFilenameTracks(videoUrl);
+            applyProbedTracks(fallback);
+        };
+
+        xhr.onerror = function () {
+            console.warn('[SunPlay.Player] Range request error, falling back to release tags');
+            var fallback = fallbackFilenameTracks(videoUrl);
+            applyProbedTracks(fallback);
+        };
+
+        xhr.ontimeout = function () {
+            console.warn('[SunPlay.Player] Range request timed out, falling back to release tags');
+            var fallback = fallbackFilenameTracks(videoUrl);
+            applyProbedTracks(fallback);
+        };
+
+        try {
+            xhr.send();
+        } catch (e) {
+            console.warn('[SunPlay.Player] Failed to dispatch probe XHR:', e);
+            var fallback = fallbackFilenameTracks(videoUrl);
+            applyProbedTracks(fallback);
+        }
+    }
+
     function addEmbeddedTextTrack(tt) {
         if (!tt) return;
         var trackIdx = -1;
@@ -769,6 +1104,77 @@ SunPlay.Player = (function () {
                     video.textTracks[i].mode = isCurrent ? 'showing' : 'hidden';
                 }
             }
+        } else if (track.type === 'embedded_mkv') {
+            activeCues = [];
+            var langName = track.langName || 'English';
+
+            if (video && video.textTracks && video.textTracks.length > 0) {
+                for (var m = 0; m < video.textTracks.length; m++) {
+                    video.textTracks[m].mode = 'hidden';
+                }
+            }
+
+            if (track.isBitmap) {
+                // BluRay PGS/SUP bitmap graphic track
+                if (SunPlay.App && SunPlay.App.showToast) {
+                    SunPlay.App.showToast('PGS is BluRay image format. Pairing with ' + langName + ' text subtitle...');
+                }
+            } else {
+                if (SunPlay.App && SunPlay.App.showToast) {
+                    SunPlay.App.showToast('Selected ' + track.label);
+                }
+            }
+
+            // Look for matching OpenSubtitles or sidecar track for this language
+            var matchedOs = subtitleTracks.find(function (t) {
+                return (t.type === 'opensubtitles') && t.language && track.language &&
+                       (t.language.toLowerCase() === track.language.toLowerCase() ||
+                        t.language.toLowerCase().indexOf(track.language.toLowerCase()) !== -1 ||
+                        track.language.toLowerCase().indexOf(t.language.toLowerCase()) !== -1);
+            });
+
+            if (matchedOs) {
+                if (matchedOs.cues && matchedOs.cues.length > 0) {
+                    activeCues = matchedOs.cues;
+                } else {
+                    fetch(matchedOs.url)
+                        .then(function (res) { return res.text(); })
+                        .then(function (srtText) {
+                            matchedOs.cues = parseSrt(srtText);
+                            if (selectedSubtitleIndex === index) {
+                                activeCues = matchedOs.cues;
+                                if (SunPlay.App && SunPlay.App.showToast) {
+                                    SunPlay.App.showToast('Loaded ' + langName + ' text subtitles (' + matchedOs.cues.length + ' lines)');
+                                }
+                            }
+                        })
+                        .catch(function () {});
+                }
+            } else {
+                // Automatically fetch OpenSubtitles catalog for this language
+                fetchOpenSubtitles(displayTitle, function () {
+                    var mTrack = subtitleTracks.find(function (t) {
+                        return (t.type === 'opensubtitles') && t.language && track.language &&
+                               (t.language.toLowerCase() === track.language.toLowerCase() ||
+                                t.language.toLowerCase().indexOf(track.language.toLowerCase()) !== -1 ||
+                                track.language.toLowerCase().indexOf(t.language.toLowerCase()) !== -1);
+                    });
+                    if (mTrack && mTrack.url) {
+                        fetch(mTrack.url)
+                            .then(function (res) { return res.text(); })
+                            .then(function (srtText) {
+                                mTrack.cues = parseSrt(srtText);
+                                if (selectedSubtitleIndex === index) {
+                                    activeCues = mTrack.cues;
+                                    if (SunPlay.App && SunPlay.App.showToast) {
+                                        SunPlay.App.showToast('Loaded ' + langName + ' subtitles (' + mTrack.cues.length + ' lines)');
+                                    }
+                                }
+                            })
+                            .catch(function () {});
+                    }
+                });
+            }
         }
         updateSubtitleBadge();
     }
@@ -780,7 +1186,8 @@ SunPlay.Player = (function () {
                 lbl.innerText = 'Subtitles (Off)';
             } else {
                 var t = subtitleTracks[selectedSubtitleIndex];
-                lbl.innerText = (t && t.language ? t.language.toUpperCase() : 'ON');
+                var l = (t && (t.langName || t.language)) ? (t.langName || t.language).toUpperCase() : 'ON';
+                lbl.innerText = l.length > 10 ? l.substring(0, 8) + '..' : l;
             }
         }
     }
@@ -1444,10 +1851,14 @@ SunPlay.Player = (function () {
                 }
             } else if (sheetOpen === 'audio') {
                 selectedAudioIndex = sheetFocusRow;
+                var aTrack = audioTracks[selectedAudioIndex];
                 if (audioTracks[selectedAudioIndex] && video.audioTracks) {
                     for (var i = 0; i < video.audioTracks.length; i++) {
                         video.audioTracks[i].enabled = (i === selectedAudioIndex);
                     }
+                }
+                if (SunPlay.App && SunPlay.App.showToast) {
+                    SunPlay.App.showToast('Audio: ' + (aTrack ? aTrack.label : 'Default'));
                 }
                 closeSheet();
             }
