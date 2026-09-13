@@ -1,114 +1,156 @@
 # SunPlay
 
-Pure native C/C++ media player and streaming application for **LG webOS TV**, engineered for zero-copy hardware video decoding, dual video plane acceleration, and low-memory performance on 4K HDR Remux streams.
+Pure native media player and streaming application for **LG webOS TV**, engineered for zero-copy hardware video decoding, container header probing, and low-memory performance on 4K HDR Remux streams.
+
+> [!WARNING]
+> **Beta Stage Notice**: SunPlay is currently in active **Beta** development. While the core video player and streaming engine are fully functional, you may encounter edge cases or bugs with certain rare container profiles or specific TV models. Active updates and refinements are ongoing.
+
+> [!IMPORTANT]
+> **Memory & Stability Tip (Clear Cache Regularly)**:
+> LG TVs have limited shared system RAM (typically 1 GB to 1.5 GB for the entire operating system, apps, and hardware video buffers).
+> - When playing large 4K streams or 20 GB – 70 GB Remux files, webOS can display *"The app will restart to free up memory"* if memory becomes constrained.
+> - **Recommendation**: Go to the **Settings** tab in SunPlay and click **Clear Cache** periodically (especially before playing massive 4K files) to ensure maximum available memory for the hardware video decoder.
+> - Ensure background TV apps (like Netflix, YouTube, or web browser) are closed before launching heavy 4K streams.
 
 ---
 
 ## 🏆 Credits & Acknowledgments
 
-The core native media engine and playback architecture of **SunPlay** are proudly built upon and adapted from the open-source media player project [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) by **iqui27**.
+The native media engine foundations and player architecture of **SunPlay** are inspired by and adapted from the open-source media player project [nuvio-native-legacy](https://github.com/iqui27/nuvio-native-legacy) by **iqui27**.
 
 We express our sincere appreciation and credit to:
 - **iqui27** ([@iqui27](https://github.com/iqui27)) for architecting `nuvio-native-legacy` and pioneering native webOS uMS & libAcbAPI media plane integration.
-- The open-source LG webOS homebrew and development community.
+- The open-source LG webOS development community.
 
 All original underlying player routines, video subsystem integrations, and native Luna Service bus bindings remain the intellectual property and creation of their respective authors under their original open-source licenses.
 
 ---
 
-## Highlights & Features
+## 🚀 How to Stream Easily (New User Guide)
 
-1. **Pure Native Architecture (No HTML5 / Chromium overhead)**:
-   - Written in C99 with SDL2 and OpenGL ES 2.0.
-   - Communicates directly with the LG webOS native media server (`luna://com.webos.media` / `uMS`) via `libluna-service2`.
-   - Dual video plane support:
-     - **webOS 4.x** (e.g. OLED C9, B9): Hardware plane integration via `libAcbAPI`.
-     - **webOS 5.0+** (CX, C1, C2, C3, C4, G-series): Hardware plane integration via `SDL_webOSCreateExportedWindow`.
-   - Native hardware decoding for **4K Ultra HD, 1080p, HEVC (H.265), H.264, VP9, AV1, HDR10, and Dolby Vision**.
+Streaming video on your LG TV with SunPlay takes only a few seconds:
 
-2. **Audio Track Selection**:
-   - Real-time detection of multiple audio tracks embedded in the stream (`sourceInfo`).
-   - Seamless switching between language tracks without restarting playback.
-   - Audio passthrough support for Dolby Atmos, Dolby Digital Plus (EAC3), AC3, and DTS.
+### Step 1: Open SunPlay on your LG TV
+Launch SunPlay from your TV home dashboard or apps menu.
 
-3. **Subtitles & OpenSubtitles Integration**:
-   - **Embedded Subtitles**: Detects and plays embedded text tracks from MKV, MP4, and TS streams.
-   - **OpenSubtitles v3 Integration**: Asynchronously searches OpenSubtitles v3 for subtitles matching the title / IMDb ID, downloads remote SRT/WebVTT cues, and parses them on a background thread.
-   - **High-Precision Overlay**: Subtitles rendered as sharp, high-contrast text on top of the hardware video plane.
-   - **Customizable Styling & Timing**:
-     - Size: Small, Normal, Large, Extra Large
-     - Colors: White, Yellow, Green, Blue, Red, Black
-     - Background: None, Translucent, Solid
-     - Position: Vertical offset adjustment
-     - Delay / Sync (`Atraso`): Adjust timing in milliseconds to fix out-of-sync audio/subtitles.
+### Step 2: Send or Enter Your Stream URL
+You have three convenient ways to load a stream:
+- **Option A — Instant Mobile / PC Push (Recommended)**:
+  1. SunPlay displays a local IP web address (and QR code) on the home screen (e.g. `http://192.168.1.50:8080`).
+  2. Open that URL on your phone or PC browser (must be connected to the same Wi-Fi).
+  3. Paste your video streaming link and tap **"Send to TV"**.
+  4. The URL instantly appears in SunPlay on your TV screen!
+- **Option B — Direct Remote Control Entry**:
+  1. Click the text box on your TV screen using the LG Magic Remote cursor.
+  2. Type or paste your video link and click **"Play"**.
+- **Option C — Watch History**:
+  1. Previously played links are automatically saved in the **Recent History** section.
+  2. Click any history item to choose **Resume** (from where you left off) or **Start from Beginning**.
 
-4. **Player Controls & Navigation**:
-   - Auto-hiding modern player HUD (4-second inactivity timer).
-   - Fast-forward & Rewind with hold-to-accelerate jumps (10s, 30s, 60s, 120s).
-   - Smooth progress bar with scrub buffer preview.
-   - Aspect ratio mode switcher: Original, 16:9, Zoom, Letterbox.
-   - Video info / health stream diagnostics (resolution, frame rate, bitrate, codec, HDR status).
-   - Full LG Magic Remote & D-pad navigation with Back button support.
+### Step 3: Use On-Screen Remote Controls
+While the video is playing, press **Enter / OK** or any D-pad arrow on your Magic Remote to reveal the on-screen display (OSD):
+- **Audio Tracks**: Switch between embedded audio streams (Hindi, English, Tamil, Telugu, 5.1 / 7.1 surround sound).
+- **Subtitles**: Select embedded subtitle tracks or search millions of subtitles live via the **OpenSubtitles** search dialog.
+- **Subtitle Styling**: Live adjustment of subtitle font size (Small to Extra Large), colors (White, Yellow, Cyan, Green), background box, and millisecond delay sync.
+- **Aspect Ratio**: Cycle between Original, 16:9 Stretch, 1.15x Zoom, and Fullscreen Crop.
+- **Seek / Jump**: Instant debounced 10-second jumps using Left / Right D-pad arrows or dedicated OSD buttons.
+- **Exit**: A single press of the remote's **Back** button safely closes the player and returns you to the home menu.
 
 ---
 
-## Project Structure
+## 📦 Installing the IPK File on Your LG TV
 
-```
-SunPlay/
-├── app/
-│   ├── appinfo.json             # App metadata (id: com.sunplay.native, type: native)
-│   ├── icon.png                 # App icon
-│   ├── icon-large.png           # App large icon
-│   ├── sunplay-native           # Compiled ARMv7 native ELF binary
-│   ├── art/                     # UI icons, badges, visual assets
-│   └── fonts/                   # Inter TrueType fonts
-├── src/                         # Full C Source Code (142 files)
-│   ├── main.c                   # Application lifecycle, SDL2 window, GL setup
-│   ├── video.c                  # webOS Luna Bus, uMS, libAcbAPI media pipeline
-│   ├── video.h                  # Media pipeline declarations & stream info
-│   ├── player.c                 # Player UI overlay, progress bar, OSD
-│   ├── player.h                 # Player UI functions
-│   ├── faixas.c / faixas.h      # Audio & Subtitle track selector sheets
-│   ├── legenda.c / legenda.h    # Subtitle parser (SRT/VTT) & cue sync
-│   ├── addons.c / addons.h      # OpenSubtitles v3 API integration
-│   ├── mkv.c / mkv.h            # Matroska container parser
-│   ├── gfx.c / gfx.h            # OpenGL ES 2.0 renderer
-│   ├── text.c / text.h          # SDL_ttf font rendering engine
-│   └── ...                      # Catalog, search, settings, networking
-├── tools/
-│   ├── Dockerfile               # ARM cross-compilation container (openlgtv/buildroot-nc4)
-│   ├── arm.sh                   # Build script for ARM target
-│   └── env.sh                   # Environment variables
-├── Makefile                     # Build & deployment targets
-├── package.bat                  # 1-click Windows IPK packager
-└── dist/
-    └── com.sunplay.native_1.0.0_arm.ipk  # Ready-to-install package
-```
+You can install the ready-to-run package (`dist/com.sunplay.native_1.0.0_all.ipk`) onto your LG TV using either a **Windows PC app**, a **Mobile phone app**, or the **command line**.
+
+### Prerequisite (Required for all methods):
+1. On your LG TV, open the **LG Content Store / Apps**.
+2. Search for and install the official free **Developer Mode** app by LG.
+3. Open the **Developer Mode** app, log in with your free LG account.
+4. Turn **ON** the **"Dev Mode Status"** toggle.
+5. Turn **ON** the **"Key Server"** toggle.
+6. Note down the **IP Address** and the **Passphrase** displayed on your TV screen.
 
 ---
 
-## Packaging the App (Windows)
+### Method 1: Using Windows / PC App (webOS Dev Manager — Easiest & Recommended)
 
-To build the ready-to-install `.ipk` package on Windows:
-
-1. Double-click `package.bat` (or run it from the terminal):
-   ```cmd
-   cd "SunPlay - Native"
-   package.bat
-   ```
-2. The output IPK will be generated in `dist/com.sunplay.native_1.0.0_arm.ipk`.
+1. Download and install **webOS Dev Manager** on your Windows PC:
+   - Available on GitHub: [webOS Dev Manager Releases](https://github.com/webosbrew/dev-manager/releases) (Download `webos-dev-manager.Setup.exe`).
+2. Launch webOS Dev Manager on your PC.
+3. Click **"+ Add Device"** in the top-left corner:
+   - **Device Name**: e.g., `Living Room TV`
+   - **IP Address**: Enter the TV IP address shown in your TV's Developer Mode app.
+   - **Authentication**: Choose `Passphrase` and enter the 6-character code shown on your TV.
+4. Click **Connect**. Your TV will pair with the app.
+5. Click the **"Install"** button (or **"Install from File"**).
+6. Browse and select `dist\com.sunplay.native_1.0.0_all.ipk` from the SunPlay folder.
+7. The app will install onto your TV in a few seconds and appear directly in your TV's app drawer!
 
 ---
 
-## Installing on LG TV
+### Method 2: Using Mobile App (Android)
 
-### Method 1: Using LG webOS CLI (`ares-install`)
-```cmd
-ares-install dist\com.sunplay.native_1.0.0_arm.ipk -d <TV_DEVICE_NAME>
+1. Connect your Android phone to the **same Wi-Fi network** as your LG TV.
+2. Install a webOS developer / SSH management app (such as *webOS Dev Manager for Android* or a terminal SSH client with SFTP).
+3. Connect to your TV's IP address using the Developer Mode port (`9922`) and your TV's passphrase key.
+4. Transfer and install `com.sunplay.native_1.0.0_all.ipk` directly to the TV.
+
+---
+
+### Method 3: Using the Official webOS CLI (`ares-install`)
+
+If you have the LG webOS CLI tools installed on your computer:
+
+```bash
+# Register your TV (first time only)
+ares-setup-device
+
+# Install the SunPlay package
+ares-install dist/com.sunplay.native_1.0.0_all.ipk -d <TV_DEVICE_NAME>
+
+# Launch the app
 ares-launch com.sunplay.native -d <TV_DEVICE_NAME>
 ```
 
-### Method 2: webOS Homebrew Channel
-1. Copy `com.sunplay.native_1.0.0_arm.ipk` to a USB flash drive or send via IPK installer.
-2. Open Homebrew Channel on your TV and install the package.
+---
+
+## 🛠️ Building & Packaging the App
+
+To re-package the app after editing code:
+
+1. Run the build script or packager on Windows:
+   ```cmd
+   package.bat
+   ```
+   Or using Node.js:
+   ```cmd
+   node package.js
+   ```
+2. The package will be created in `dist/com.sunplay.native_1.0.0_all.ipk`.
+
+---
+
+## ✨ Key Features & Architecture
+
+1. **Hardware Video Acceleration**:
+   - Zero-copy hardware decoding for **4K Ultra HD, 1080p, HEVC (H.265), H.264, VP9, AV1, HDR10, and Dolby Vision**.
+   - Direct memory-safe streaming buffers to prevent TV out-of-memory restarts.
+
+2. **Container Header Probing (MKV / MP4)**:
+   - Probes the first 384 KB of media headers (`Range: bytes=0-393215`) to read EBML TrackEntry data.
+   - Accurately identifies all embedded subtitle tracks (`S_TEXT/UTF8`, `S_TEXT/ASS`, `S_HDMV/PGS`) and audio streams (`A_EAC3`, `A_DTS`, `A_AAC`, `A_AC3`) even when standard TV demuxers skip them.
+
+3. **Multi-Audio Track Selection**:
+   - Real-time selection of audio tracks (Hindi, Tamil, Telugu, English, etc.).
+   - Support for eARC and Optical digital audio passthrough (Dolby Atmos, Dolby Digital Plus, DTS).
+
+4. **Dual Subtitle Engine**:
+   - Embedded subtitle track detection.
+   - Built-in live OpenSubtitles v3 title search (search by movie name or series).
+   - High-contrast text overlay with customizable font size, colors, background boxes, and millisecond delay sync.
+   - Automatic handling for BluRay PGS bitmap streams (alerts user and switches to matching text subtitles).
+
+5. **Smooth Magic Remote Control**:
+   - Full D-pad and Magic Remote pointer support.
+   - 1-click Back button exit to home menu.
+   - Auto-resume progress tracking.
