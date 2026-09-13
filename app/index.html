@@ -128,7 +128,7 @@
     <div id="settings-screen" class="screen">
         <div class="settings-container">
             <div class="settings-header">
-                <button id="settings-back-btn" class="back-btn" data-focusable="true">
+                <button id="settings-back-btn" class="back-btn" data-focusable="true" tabindex="0">
                     <svg viewBox="0 0 24 24" width="24" height="24" fill="white">
                         <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
                     </svg>
@@ -139,11 +139,11 @@
             <div class="settings-list">
                 <div class="settings-group">
                     <h3 class="settings-group-title">Playback</h3>
-                    <div class="setting-item" data-focusable="true" data-setting="autoResume">
+                    <div class="setting-item" data-focusable="true" tabindex="0" data-setting="autoResume">
                         <span class="setting-label">Auto-Resume Playback</span>
                         <span class="setting-value" id="setting-autoResume">On</span>
                     </div>
-                    <div class="setting-item" data-focusable="true" data-setting="lowMemoryMode">
+                    <div class="setting-item" data-focusable="true" tabindex="0" data-setting="lowMemoryMode">
                         <span class="setting-label">Memory Saver (4K Remux / Low RAM)</span>
                         <span class="setting-value" id="setting-lowMemoryMode">On</span>
                     </div>
@@ -151,11 +151,11 @@
 
                 <div class="settings-group">
                     <h3 class="settings-group-title">Storage</h3>
-                    <div class="setting-item" data-focusable="true" id="setting-clear-cache-item">
+                    <div class="setting-item" data-focusable="true" tabindex="0" id="setting-clear-cache-item">
                         <span class="setting-label">Clear App Cache & Memory Buffers</span>
                         <span class="setting-value" style="color:#ff8c00; font-weight:bold;">Clean Now</span>
                     </div>
-                    <div class="setting-item" data-focusable="true" id="setting-clear-history-item">
+                    <div class="setting-item" data-focusable="true" tabindex="0" id="setting-clear-history-item">
                         <span class="setting-label">Clear Playback History</span>
                         <span class="setting-value" style="color:#ff8c00; font-weight:bold;">Clear Now</span>
                     </div>

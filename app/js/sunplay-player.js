@@ -74,6 +74,9 @@ SunPlay.Player = (function () {
     var seekDebounceTimer = null;
     var virtualSeekPos = null;
 
+    // Subtitle search modal playback state
+    var wasPlayingBeforeSubModal = false;
+
     /* ================= INITIALIZATION ================= */
 
     function init(parentContainer) {
@@ -868,6 +871,17 @@ SunPlay.Player = (function () {
             });
         }
 
+        var dtsNote = '';
+        var isDtsStream = (currentUrl && (currentUrl.toUpperCase().indexOf('DTS') !== -1 || currentUrl.toUpperCase().indexOf('REMUX') !== -1)) ||
+                          (displayTitle && (displayTitle.toUpperCase().indexOf('DTS') !== -1 || displayTitle.toUpperCase().indexOf('REMUX') !== -1));
+        if (isDtsStream || audioTracks.length <= 1) {
+            dtsNote = `
+                <div style="margin-top: 16px; padding: 12px 16px; background: rgba(255, 140, 0, 0.1); border-left: 4px solid #ff8c00; border-radius: 8px; font-size: 15px; color: #ccc; line-height: 1.4;">
+                    <b style="color: #ff8c00;">ℹ️ DTS Audio Note:</b> LG webOS (CX, C1, C2) lacks internal DTS decoding on TV speakers. For DTS-HD / DTS streams, set TV Sound Out to <b>eARC / Optical Passthrough</b> with a DTS soundbar/receiver, or select an AC3 / AAC track if embedded.
+                </div>
+            `;
+        }
+
         sheetOverlay.innerHTML = `
             <div class="sp-sheet-panel" style="max-width: 650px;">
                 <div class="sp-sheet-header">
@@ -877,6 +891,7 @@ SunPlay.Player = (function () {
                 <div class="sp-sheet-body">
                     <div class="sp-sheet-col" style="width: 100%;">
                         <div class="sp-sheet-list">${items}</div>
+                        ${dtsNote}
                     </div>
                 </div>
             </div>
@@ -956,6 +971,14 @@ SunPlay.Player = (function () {
             container.appendChild(modal);
         }
 
+        // Pause playback while searching subtitles
+        if (video && !video.paused) {
+            wasPlayingBeforeSubModal = true;
+            video.pause();
+        } else {
+            wasPlayingBeforeSubModal = false;
+        }
+
         modal.innerHTML = `
             <div class="sp-modal-card" style="max-width: 650px;">
                 <div class="sp-modal-title">🔍 Search OpenSubtitles</div>
@@ -963,9 +986,9 @@ SunPlay.Player = (function () {
                 <div style="margin-bottom: 20px;">
                     <input type="text" id="sp-sub-search-input" class="url-input" style="width: 100%; box-sizing: border-box; font-size: 22px; padding: 14px;" value="${escapeHtml(displayTitle)}" placeholder="Enter title e.g. Avatar Fire and Ash">
                 </div>
-                <div class="sp-modal-actions">
-                    <button class="sp-modal-btn primary focused" id="sp-sub-do-search">🔍 Search Subtitles</button>
-                    <button class="sp-modal-btn secondary" id="sp-sub-cancel-search">Cancel</button>
+                <div class="sp-modal-actions" style="flex-direction: row; justify-content: flex-end; gap: 14px;">
+                    <button class="sp-modal-btn secondary" id="sp-sub-cancel-search" tabindex="0">Cancel</button>
+                    <button class="sp-modal-btn primary focused" id="sp-sub-do-search" tabindex="0">🔍 Search</button>
                 </div>
                 <div id="sp-sub-search-status" style="margin-top: 15px; font-size: 18px; color: #ff8c00; min-height: 24px;"></div>
             </div>
@@ -1011,8 +1034,98 @@ SunPlay.Player = (function () {
     function closeSubSearchModal() {
         var modal = document.getElementById('sp-sub-search-modal');
         if (modal) modal.style.display = 'none';
+
+        // Resume video playback if it was playing before opening modal
+        if (wasPlayingBeforeSubModal && video) {
+            video.play();
+            wasPlayingBeforeSubModal = false;
+        }
+
         if (sheetOpen === 'sub') {
             highlightSheetFocus();
+        }
+    }
+
+    function handleSubSearchModalKey(key, e) {
+        var input = document.getElementById('sp-sub-search-input');
+        var doBtn = document.getElementById('sp-sub-do-search');
+        var cancelBtn = document.getElementById('sp-sub-cancel-search');
+        if (!input || !doBtn || !cancelBtn) return;
+
+        var active = document.activeElement;
+
+        if (key === 38) { // Up
+            e.preventDefault();
+            e.stopPropagation();
+            input.focus();
+        } else if (key === 40) { // Down
+            e.preventDefault();
+            e.stopPropagation();
+            if (active === input) {
+                doBtn.focus();
+            }
+        } else if (key === 37) { // Left
+            if (active === doBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                cancelBtn.focus();
+            }
+        } else if (key === 39) { // Right
+            if (active === cancelBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                doBtn.focus();
+            }
+        } else if (key === 13) { // Enter
+            e.preventDefault();
+            e.stopPropagation();
+            if (active === cancelBtn) {
+                closeSubSearchModal();
+            } else {
+                var q = input.value.trim();
+                if (q) {
+                    var statusEl = document.getElementById('sp-sub-search-status');
+                    if (statusEl) statusEl.innerText = 'Searching OpenSubtitles catalog for "' + q + '"...';
+                    fetchOpenSubtitles(q, function (count) {
+                        if (count > 0) {
+                            if (statusEl) statusEl.innerText = 'Found ' + count + ' new subtitles! Added to list.';
+                            setTimeout(function () {
+                                closeSubSearchModal();
+                                renderSubtitleSheetHTML();
+                            }, 900);
+                        } else {
+                            if (statusEl) statusEl.innerText = 'No subtitles found for "' + q + '". Try searching a different title or year.';
+                        }
+                    });
+                }
+            }
+        } else if (key === 461 || key === 27 || key === 8) { // Back
+            e.preventDefault();
+            e.stopPropagation();
+            closeSubSearchModal();
+        }
+    }
+
+    function refreshAudioTracks() {
+        if (video && video.audioTracks && video.audioTracks.length > 0) {
+            audioTracks = [];
+            for (var i = 0; i < video.audioTracks.length; i++) {
+                var a = video.audioTracks[i];
+                var label = a.label || a.language;
+                if (!label) label = 'Audio Track ' + (i + 1);
+                if (a.kind) label += ' (' + a.kind + ')';
+                audioTracks.push({
+                    id: a.id || i,
+                    trackObject: a,
+                    label: label.toUpperCase(),
+                    language: a.language || 'und'
+                });
+            }
+            var audioBadge = document.getElementById('sp-badge-audio');
+            if (audioBadge) audioBadge.innerText = audioTracks.length + ' Tracks';
+            if (sheetOpen === 'audio') {
+                openAudioSheet();
+            }
         }
     }
 
@@ -1089,20 +1202,7 @@ SunPlay.Player = (function () {
             }
 
             // Extract audio tracks
-            if (video.audioTracks && video.audioTracks.length > 0) {
-                audioTracks = [];
-                for (var i = 0; i < video.audioTracks.length; i++) {
-                    var a = video.audioTracks[i];
-                    audioTracks.push({
-                        id: a.id || i,
-                        trackObject: a,
-                        label: (a.label || a.language || ('Audio ' + (i + 1))).toUpperCase(),
-                        language: a.language || 'und'
-                    });
-                }
-                var audioBadge = document.getElementById('sp-badge-audio');
-                if (audioBadge) audioBadge.innerText = audioTracks.length + ' Tracks';
-            }
+            refreshAudioTracks();
 
             // Extract existing embedded text tracks
             if (video.textTracks && video.textTracks.length > 0) {
@@ -1111,6 +1211,13 @@ SunPlay.Player = (function () {
                 }
             }
         });
+
+        // Dynamic audio track discovery (asynchronous container demuxing)
+        if (video.audioTracks) {
+            video.audioTracks.onaddtrack = refreshAudioTracks;
+            video.audioTracks.onremovetrack = refreshAudioTracks;
+            video.audioTracks.onchange = refreshAudioTracks;
+        }
 
         video.addEventListener('ended', function () {
             if (SunPlay.App && SunPlay.App.showToast) {
@@ -1204,12 +1311,10 @@ SunPlay.Player = (function () {
                 return;
             }
 
-            // If a modal or sheet is open, handle navigation
+            // If subtitle search modal is open, handle modal D-pad navigation
             var subModal = document.getElementById('sp-sub-search-modal');
             if (subModal && subModal.style.display !== 'none') {
-                if (key === 27 || key === 461) {
-                    closeSubSearchModal();
-                }
+                handleSubSearchModalKey(key, e);
                 return;
             }
 

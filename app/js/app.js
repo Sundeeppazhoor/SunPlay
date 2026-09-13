@@ -362,15 +362,32 @@ SunPlay.App = (function () {
         }
 
         var formattedTime = formatTime(savedPos);
+        var cleanTitle = item.title;
+        if (!cleanTitle || cleanTitle.startsWith('http://') || cleanTitle.startsWith('https://')) {
+            if (SunPlay.Player && SunPlay.Player.cleanStreamTitle) {
+                cleanTitle = SunPlay.Player.cleanStreamTitle(item.url || item.title);
+            }
+        }
+        if (!cleanTitle) cleanTitle = 'Saved Stream';
+
         modal.innerHTML = `
             <div class="sp-modal-card">
-                <div class="sp-modal-title">${escapeHtml(item.title || 'Stream')}</div>
+                <div class="sp-modal-title" title="${escapeHtml(item.title || cleanTitle)}">${escapeHtml(cleanTitle)}</div>
                 <div class="sp-modal-desc">Saved playback progress found at <b>${formattedTime}</b>. How would you like to play?</div>
                 <div class="sp-modal-actions">
-                    <button class="sp-modal-btn primary focused" id="sp-hist-resume">▶ Resume from ${formattedTime}</button>
-                    <button class="sp-modal-btn secondary" id="sp-hist-start">↺ Start from Beginning</button>
-                    <button class="sp-modal-btn danger" id="sp-hist-delete">🗑 Remove from History</button>
-                    <button class="sp-modal-btn text" id="sp-hist-cancel">Cancel</button>
+                    <button class="sp-modal-btn primary focused" id="sp-hist-resume" tabindex="0">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                        <span>Resume from ${formattedTime}</span>
+                    </button>
+                    <button class="sp-modal-btn secondary" id="sp-hist-start" tabindex="0">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                        <span>Start from Beginning</span>
+                    </button>
+                    <button class="sp-modal-btn danger" id="sp-hist-delete" tabindex="0">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        <span>Remove from History</span>
+                    </button>
+                    <button class="sp-modal-btn text" id="sp-hist-cancel" tabindex="0">Cancel</button>
                 </div>
             </div>
         `;
@@ -413,26 +430,7 @@ SunPlay.App = (function () {
 
         cancelBtn.addEventListener('click', closeModal);
 
-        var buttons = [resumeBtn, startBtn, deleteBtn, cancelBtn];
-        var focusIdx = 0;
         resumeBtn.focus();
-
-        modal.onkeydown = function (e) {
-            var k = e.keyCode;
-            if (k === 38) { // Up
-                e.preventDefault();
-                focusIdx = Math.max(0, focusIdx - 1);
-                buttons[focusIdx].focus();
-            } else if (k === 40) { // Down
-                e.preventDefault();
-                focusIdx = Math.min(buttons.length - 1, focusIdx + 1);
-                buttons[focusIdx].focus();
-            } else if (k === 461 || k === 27 || k === 8) { // Back
-                e.preventDefault();
-                e.stopPropagation();
-                closeModal();
-            }
-        };
     }
 
     function clearAppCache() {
@@ -512,6 +510,13 @@ SunPlay.App = (function () {
                 return;
             }
 
+            // When history choice modal is open, intercept ALL keys for modal
+            var histModal = document.getElementById('sp-history-choice-modal');
+            if (histModal && histModal.style.display !== 'none') {
+                handleHistoryModalKey(keyCode, e);
+                return;
+            }
+
             // When in player screen, let sunplay-player.js handle ALL keys
             if (currentScreen === 'player' && SunPlay.Player) {
                 return;
@@ -566,6 +571,41 @@ SunPlay.App = (function () {
             } else if (window.close) {
                 window.close();
             }
+        }
+    }
+
+    function handleHistoryModalKey(keyCode, e) {
+        var resumeBtn = document.getElementById('sp-hist-resume');
+        var startBtn = document.getElementById('sp-hist-start');
+        var deleteBtn = document.getElementById('sp-hist-delete');
+        var cancelBtn = document.getElementById('sp-hist-cancel');
+        if (!resumeBtn || !startBtn || !deleteBtn || !cancelBtn) return;
+
+        var buttons = [resumeBtn, startBtn, deleteBtn, cancelBtn];
+        var curIdx = buttons.indexOf(document.activeElement);
+        if (curIdx === -1) curIdx = 0;
+
+        if (keyCode === 38) { // Up
+            e.preventDefault();
+            e.stopPropagation();
+            var prevIdx = (curIdx - 1 + buttons.length) % buttons.length;
+            buttons[prevIdx].focus();
+        } else if (keyCode === 40) { // Down
+            e.preventDefault();
+            e.stopPropagation();
+            var nextIdx = (curIdx + 1) % buttons.length;
+            buttons[nextIdx].focus();
+        } else if (keyCode === 13) { // Enter
+            e.preventDefault();
+            e.stopPropagation();
+            if (buttons[curIdx]) buttons[curIdx].click();
+        } else if (keyCode === 461 || keyCode === 8 || keyCode === 27) { // Back
+            e.preventDefault();
+            e.stopPropagation();
+            var modal = document.getElementById('sp-history-choice-modal');
+            if (modal) modal.style.display = 'none';
+            var card = document.querySelector('.history-card:focus') || document.querySelector('.history-card');
+            if (card) card.focus();
         }
     }
 
@@ -652,6 +692,36 @@ SunPlay.App = (function () {
                 }
                 return;
             }
+        }
+
+        // 2. Explicit deterministic transitions for Settings screen
+        if (currentScreen === 'settings') {
+            var settingsNavItems = [
+                document.getElementById('settings-back-btn'),
+                document.querySelector('.setting-item[data-setting="autoResume"]'),
+                document.querySelector('.setting-item[data-setting="lowMemoryMode"]'),
+                document.getElementById('setting-clear-cache-item'),
+                document.getElementById('setting-clear-history-item')
+            ].filter(Boolean);
+
+            var sIdx = settingsNavItems.indexOf(active);
+            if (sIdx === -1) {
+                if (settingsNavItems.length > 0) settingsNavItems[0].focus();
+                return;
+            }
+
+            if (direction === 'up') {
+                if (sIdx > 0) {
+                    settingsNavItems[sIdx - 1].focus();
+                }
+                return;
+            } else if (direction === 'down') {
+                if (sIdx < settingsNavItems.length - 1) {
+                    settingsNavItems[sIdx + 1].focus();
+                }
+                return;
+            }
+            return;
         }
 
         // 2. Check for data-nav attribute

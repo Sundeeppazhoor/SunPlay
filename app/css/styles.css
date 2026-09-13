@@ -555,9 +555,23 @@ html, body {
     justify-content: space-between;
     padding: 20px 24px;
     border-radius: 12px;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
     transition: all 0.15s ease;
     border-left: 4px solid transparent;
+}
+
+.setting-item[data-focusable="true"] {
+    cursor: pointer;
+    outline: none;
+}
+
+.setting-item[data-focusable="true"]:focus,
+.setting-item[data-focusable="true"].focused {
+    background: rgba(255, 140, 0, 0.18);
+    border-left: 6px solid #ff8c00;
+    box-shadow: 0 4px 20px rgba(255, 140, 0, 0.35);
+    outline: none;
+    transform: translateX(10px);
 }
 
 .setting-label {
@@ -1291,20 +1305,29 @@ html, body {
     background: #151522;
     border: 2px solid rgba(255, 140, 0, 0.4);
     border-radius: 24px;
-    padding: 40px;
-    max-width: 750px;
+    padding: 32px 36px;
+    max-width: 720px;
     width: 90%;
+    max-height: 85vh;
     box-shadow: 0 24px 70px rgba(0, 0, 0, 0.9);
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
+    box-sizing: border-box;
 }
 
 .sp-modal-title {
-    font-size: 32px;
+    font-size: 26px;
     font-weight: 700;
     color: #fff;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
     word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.3;
 }
 
 .sp-modal-desc {
