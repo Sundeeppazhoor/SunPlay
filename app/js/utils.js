@@ -105,10 +105,40 @@ SunPlay.Utils = {
    * @returns {string}
    */
   extractFilename: function(url) {
+    if (!url) return 'Unknown File';
     try {
-      const pathname = new URL(url, 'http://dummy.com').pathname;
-      const filename = pathname.split('/').pop();
-      return decodeURIComponent(filename) || 'Unknown File';
+      var str = url.trim();
+      if (str.indexOf('http') === 0) {
+        var parsed = null;
+        try { parsed = new URL(str); } catch (e) {}
+        if (parsed) {
+          // 1. Check response-content-disposition or content-disposition
+          var disp = parsed.searchParams.get('response-content-disposition') || 
+                     parsed.searchParams.get('content-disposition');
+          if (disp) {
+            var m = disp.match(/filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i);
+            if (m && m[1]) return decodeURIComponent(m[1].trim().replace(/^['"]|['"]$/g, ''));
+          }
+          // 2. Check explicit filename/file/title/name params
+          var fn = parsed.searchParams.get('filename') || parsed.searchParams.get('file') || 
+                   parsed.searchParams.get('title') || parsed.searchParams.get('name') ||
+                   parsed.searchParams.get('fn');
+          if (fn) {
+            return decodeURIComponent(fn.trim().replace(/^['"]|['"]$/g, ''));
+          }
+          // 3. Check pathname
+          var parts = parsed.pathname.split('/').filter(Boolean);
+          if (parts.length > 0) {
+            var last = parts[parts.length - 1];
+            if (/^(download|play|stream|view|watch|index\.(?:m3u8|mpd))$/i.test(last) && parts.length > 1) {
+              last = parts[parts.length - 2];
+            }
+            return decodeURIComponent(last) || 'Unknown File';
+          }
+        }
+      }
+      var raw = str.split('?')[0].split('/').pop();
+      return decodeURIComponent(raw) || 'Unknown File';
     } catch (e) {
       return 'Unknown File';
     }

@@ -521,32 +521,56 @@ SunPlay.Player = (function () {
             if (callback) callback(0);
             return;
         }
-        console.log('[SunPlay.Player] Searching OpenSubtitles via Cinemeta for:', title);
 
-        var searchUrl = 'https://v3-cinemeta.strem.io/catalog/movie/top/search=' + encodeURIComponent(title) + '.json';
+        // Normalize title: remove parentheses e.g. "Thudarum (2025)" -> "Thudarum 2025"
+        var cleanSearch = title.replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+        console.log('[SunPlay.Player] Searching OpenSubtitles via Cinemeta for:', cleanSearch);
 
-        fetch(searchUrl, { method: 'GET' })
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
-                var imdbId = data && data.metas && data.metas[0] ? data.metas[0].imdb_id : null;
-                if (!imdbId) {
-                    var seriesUrl = 'https://v3-cinemeta.strem.io/catalog/series/top/search=' + encodeURIComponent(title) + '.json';
-                    return fetch(seriesUrl, { method: 'GET' })
-                        .then(function (res) { return res.json(); })
-                        .then(function (sData) {
-                            return sData && sData.metas && sData.metas[0] ? sData.metas[0].imdb_id : null;
-                        });
+        function queryCinemeta(query) {
+            var url = 'https://v3-cinemeta.strem.io/catalog/movie/top/search=' + encodeURIComponent(query) + '.json';
+            return fetch(url, { method: 'GET' })
+                .then(function (res) { return res.json(); })
+                .then(function (data) {
+                    if (data && data.metas && data.metas[0]) return { id: data.metas[0].imdb_id, type: 'movie' };
+                    return null;
+                });
+        }
+
+        function queryCinemetaSeries(query) {
+            var url = 'https://v3-cinemeta.strem.io/catalog/series/top/search=' + encodeURIComponent(query) + '.json';
+            return fetch(url, { method: 'GET' })
+                .then(function (res) { return res.json(); })
+                .then(function (data) {
+                    if (data && data.metas && data.metas[0]) return { id: data.metas[0].imdb_id, type: 'series' };
+                    return null;
+                });
+        }
+
+        queryCinemeta(cleanSearch)
+            .then(function (res) {
+                if (res) return res;
+                // If cleanSearch had a 4-digit year, try search without year
+                var noYear = cleanSearch.replace(/\b(?:19|20)\d{2}\b/g, '').trim();
+                if (noYear && noYear !== cleanSearch && noYear.length > 1) {
+                    return queryCinemeta(noYear);
                 }
-                return imdbId;
+                return null;
             })
-            .then(function (imdbId) {
-                if (!imdbId) {
-                    console.log('[SunPlay.Player] No IMDb ID matched for title:', title);
+            .then(function (res) {
+                if (res) return res;
+                return queryCinemetaSeries(cleanSearch);
+            })
+            .then(function (meta) {
+                if (!meta || !meta.id) {
+                    console.log('[SunPlay.Player] No IMDb ID matched for title:', cleanSearch);
                     if (callback) callback(0);
                     return;
                 }
-                console.log('[SunPlay.Player] Resolved IMDb ID:', imdbId);
-                var subUrl = 'https://opensubtitles-v3.strem.io/subtitles/movie/' + imdbId + '.json';
+                console.log('[SunPlay.Player] Resolved IMDb ID:', meta.id);
+                var subUrl = meta.type === 'series'
+                    ? ('https://opensubtitles-v3.strem.io/subtitles/series/' + meta.id + ':1:1.json')
+                    : ('https://opensubtitles-v3.strem.io/subtitles/movie/' + meta.id + '.json');
+
                 return fetch(subUrl, { method: 'GET' })
                     .then(function (res) { return res.json(); })
                     .then(function (data) {
@@ -554,16 +578,23 @@ SunPlay.Player = (function () {
                         if (data && data.subtitles && data.subtitles.length > 0) {
                             console.log('[SunPlay.Player] Found ' + data.subtitles.length + ' OpenSubtitles');
                             data.subtitles.forEach(function (s, idx) {
-                                // Prevent duplicate track URLs
                                 var exists = subtitleTracks.some(function(t) { return t.url === s.url; });
                                 if (!exists) {
                                     var langCode = (s.lang || 'en').toLowerCase();
-                                    var langLabel = langCode.toUpperCase();
-                                    var fileName = s.subtitleFileName ? (' · ' + s.subtitleFileName.substring(0, 30)) : '';
+                                    var lInfo = resolveLangInfo(langCode, '');
+                                    var langLabel = lInfo.name ? lInfo.name.toUpperCase() : langCode.toUpperCase();
+                                    
+                                    // Clean subtitle filename from website domains and scene tags
+                                    var rawFn = s.subtitleFileName || '';
+                                    rawFn = rawFn.replace(/\.(srt|vtt)$/i, '');
+                                    rawFn = rawFn.replace(/\b(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:com|org|net|ms|in|to|co|tv|cc|xyz|site|dev|io|me|ru)\b/gi, '');
+                                    rawFn = rawFn.replace(/[\._]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                                    var fnSnippet = rawFn ? (' · ' + rawFn.substring(0, 24)) : '';
+
                                     subtitleTracks.push({
                                         id: 'os_' + (subtitleTracks.length + idx),
                                         type: 'opensubtitles',
-                                        label: langLabel + fileName,
+                                        label: langLabel + fnSnippet,
                                         language: langCode,
                                         url: s.url,
                                         cues: []
@@ -640,27 +671,64 @@ SunPlay.Player = (function () {
         'pan': 'Punjabi', 'pa': 'Punjabi',
         'mar': 'Marathi', 'mr': 'Marathi',
         'guj': 'Gujarati', 'gu': 'Gujarati',
+        'dut': 'Dutch', 'nld': 'Dutch', 'nl': 'Dutch',
+        'pol': 'Polish', 'pl': 'Polish',
+        'swe': 'Swedish', 'sv': 'Swedish',
+        'nor': 'Norwegian', 'no': 'Norwegian',
+        'dan': 'Danish', 'da': 'Danish',
+        'fin': 'Finnish', 'fi': 'Finnish',
+        'tur': 'Turkish', 'tr': 'Turkish',
+        'vie': 'Vietnamese', 'vi': 'Vietnamese',
+        'tha': 'Thai', 'th': 'Thai',
+        'ind': 'Indonesian', 'id': 'Indonesian',
+        'gre': 'Greek', 'ell': 'Greek', 'el': 'Greek',
+        'heb': 'Hebrew', 'he': 'Hebrew',
+        'ces': 'Czech', 'cze': 'Czech', 'cs': 'Czech',
+        'hun': 'Hungarian', 'hu': 'Hungarian',
+        'rom': 'Romanian', 'ron': 'Romanian', 'ro': 'Romanian',
+        'ukr': 'Ukrainian', 'uk': 'Ukrainian',
+        'fil': 'Filipino', 'tgl': 'Filipino', 'tl': 'Filipino',
+        'msa': 'Malay', 'may': 'Malay',
         'und': 'Undetermined'
     };
 
     function resolveLangInfo(langCode, trackName) {
         if (langCode && langCode !== 'und') {
-            var lCode = langCode.toLowerCase();
+            var lCode = langCode.toLowerCase().split('-')[0].trim();
             if (langLookupTable[lCode]) {
                 return { code: lCode, name: langLookupTable[lCode] };
             }
         }
         if (trackName) {
             var n = trackName.toLowerCase();
-            var keys = Object.keys(langLookupTable);
-            for (var i = 0; i < keys.length; i++) {
-                var langName = langLookupTable[keys[i]];
-                if (n.indexOf(langName.toLowerCase()) !== -1) {
-                    return { code: keys[i], name: langName };
+            var langs = [
+                'English', 'Hindi', 'Tamil', 'Telugu', 'Malayalam', 'Kannada', 'Bengali',
+                'Punjabi', 'Marathi', 'Gujarati', 'Spanish', 'French', 'German', 'Italian',
+                'Portuguese', 'Russian', 'Arabic', 'Chinese', 'Japanese', 'Korean',
+                'Dutch', 'Polish', 'Swedish', 'Norwegian', 'Danish', 'Finnish', 'Turkish',
+                'Vietnamese', 'Thai', 'Indonesian', 'Greek', 'Hebrew', 'Czech', 'Hungarian',
+                'Romanian', 'Ukrainian', 'Filipino', 'Malay'
+            ];
+            for (var i = 0; i < langs.length; i++) {
+                var re = new RegExp('\\b' + langs[i] + '\\b', 'i');
+                if (re.test(n)) {
+                    var lName = langs[i];
+                    var code = lName.substring(0, 3).toLowerCase();
+                    return { code: code, name: lName };
                 }
             }
         }
-        return { code: (langCode || 'und'), name: (langCode ? langCode.toUpperCase() : 'Track') };
+        return { code: (langCode || 'und'), name: (langCode && langCode !== 'und' ? langCode.toUpperCase() : '') };
+    }
+
+    function extractTrackDescriptor(name) {
+        if (!name) return '';
+        var desc = [];
+        if (/\b(sdh|hearing\s*impaired)\b/i.test(name)) desc.push('SDH');
+        if (/\bforced\b/i.test(name)) desc.push('Forced');
+        if (/\bcommentary\b/i.test(name)) desc.push('Commentary');
+        if (/\b(descriptive|audio\s*description|ad)\b/i.test(name)) desc.push('Descriptive');
+        return desc.length > 0 ? (' [' + desc.join(' ') + ']') : '';
     }
 
     function parseMkvHeader(bytes) {
@@ -745,7 +813,7 @@ SunPlay.Player = (function () {
             var entryEnd = Math.min(endTracks, cur + size.value);
 
             if (el.id === 0xAE) { // TrackEntry
-                var track = { number: 0, type: 0, codec: '', name: '', language: 'und' };
+                var track = { number: 0, type: 0, codec: '', name: '', language: 'und', languageBCP47: '' };
                 var eCur = cur;
                 while (eCur < entryEnd) {
                     var subEl = readElementId(bytes, eCur);
@@ -770,6 +838,8 @@ SunPlay.Player = (function () {
                         track.name = readString(bytes, eCur, valEnd);
                     } else if (subEl.id === 0x22B59C) { // Language
                         track.language = readString(bytes, eCur, valEnd);
+                    } else if (subEl.id === 0x22B59D) { // LanguageBCP47
+                        track.languageBCP47 = readString(bytes, eCur, valEnd);
                     }
                     eCur = valEnd;
                 }
@@ -787,7 +857,7 @@ SunPlay.Player = (function () {
 
     function fallbackFilenameTracks(rawUrl) {
         try {
-            var str = decodeURIComponent(rawUrl.split('?')[0].split('/').pop());
+            var str = extractFilename(rawUrl || currentUrl);
             var audio = [];
             var subtitles = [];
             var tagMatch = str.match(/\[(.*?)\]/);
@@ -842,18 +912,20 @@ SunPlay.Player = (function () {
 
         // Apply subtitles
         if (result.subtitles && result.subtitles.length > 0) {
-            result.subtitles.forEach(function (s) {
+            result.subtitles.forEach(function (s, sIdx) {
                 var exists = subtitleTracks.some(function (t) {
                     return t.type === 'embedded_mkv' && t.trackNumber === s.number;
                 });
                 if (!exists) {
-                    var lInfo = resolveLangInfo(s.language, s.name);
+                    var lCode = (s.language && s.language !== 'und') ? s.language : (s.languageBCP47 || '');
+                    var lInfo = resolveLangInfo(lCode, s.name);
                     var isBmp = (s.codec.indexOf('PGS') !== -1 || s.codec.indexOf('VOBSUB') !== -1);
                     var cleanCodec = s.codec.replace('S_', '').replace('TEXT/', '');
-                    var badge = isBmp ? 'BluRay PGS Bitmap' : cleanCodec;
-                    var langTitle = lInfo.name || 'Unknown';
-                    var extraNote = (s.name && s.name.toLowerCase() !== langTitle.toLowerCase() && s.name.toLowerCase() !== 'und') ? (' · ' + s.name) : '';
-                    var labelText = langTitle + ' [' + badge + ']' + extraNote;
+                    if (cleanCodec === 'UTF8') cleanCodec = 'SRT';
+                    var badge = isBmp ? 'BluRay PGS' : cleanCodec;
+                    var langTitle = lInfo.name || ('Subtitle ' + (s.number || (sIdx + 1)));
+                    var desc = extractTrackDescriptor(s.name);
+                    var labelText = 'Embedded · ' + langTitle + ' [' + badge + ']' + desc;
 
                     subtitleTracks.unshift({
                         id: 'mkv_sub_' + s.number,
@@ -862,9 +934,9 @@ SunPlay.Player = (function () {
                         trackIndex: s.number - 1,
                         codec: s.codec,
                         isBitmap: isBmp,
-                        label: 'Embedded · ' + labelText,
-                        language: lInfo.code,
-                        langName: lInfo.name
+                        label: labelText,
+                        language: lInfo.code || 'und',
+                        langName: lInfo.name || langTitle
                     });
                     subAdded++;
                 }
@@ -881,12 +953,13 @@ SunPlay.Player = (function () {
         // Apply audio tracks if video.audioTracks has <= 1 track
         if (result.audio && result.audio.length > 0 && audioTracks.length <= 1) {
             audioTracks = [];
-            result.audio.forEach(function (a) {
-                var lInfo = resolveLangInfo(a.language, a.name);
+            result.audio.forEach(function (a, aIdx) {
+                var lCode = (a.language && a.language !== 'und') ? a.language : (a.languageBCP47 || '');
+                var lInfo = resolveLangInfo(lCode, a.name);
                 var codecClean = a.codec.replace('A_', '').replace('/', ' ');
-                var audioLang = lInfo.name || 'Audio';
-                var extraAudioNote = (a.name && a.name.toLowerCase() !== audioLang.toLowerCase() && a.name.toLowerCase() !== 'und') ? (' · ' + a.name) : '';
-                var lbl = audioLang + ' (' + codecClean + ')' + extraAudioNote;
+                var audioLang = lInfo.name ? lInfo.name.toUpperCase() : ('AUDIO ' + (a.number || (aIdx + 1)));
+                var desc = extractTrackDescriptor(a.name);
+                var lbl = audioLang + ' (' + codecClean + ')' + (desc ? (' ' + desc) : '');
                 audioTracks.push({
                     id: 'mkv_aud_' + a.number,
                     type: 'embedded_mkv',
@@ -908,7 +981,7 @@ SunPlay.Player = (function () {
         if (!videoUrl) return;
 
         // Check for pixeldrain URLs: e.g. https://pixeldrain.dev/api/file/ck1iYV8Z?download or https://pixeldrain.com/u/ck1iYV8Z
-        var pdMatch = videoUrl.match(/pixeldrain\.(?:dev|com)\/(?:api\/file\/|u\/)([a-zA-Z0-9_-]+)/i);
+        var pdMatch = videoUrl.match(/pixeldrain\.(?:[a-z]+)\/(?:api\/file\/|u\/)([a-zA-Z0-9_-]+)/i);
         if (pdMatch && pdMatch[1]) {
             var fileId = pdMatch[1];
             fetch('https://pixeldrain.com/api/file/' + fileId + '/info')
@@ -945,12 +1018,39 @@ SunPlay.Player = (function () {
                 titleEl.innerText = displayTitle;
                 titleEl.setAttribute('title', currentRawTitle);
             }
+            try {
+                document.title = displayTitle + ' - SunPlay';
+            } catch (e) {}
+
+            // Retroactively update history in localStorage so history cards show clean movie title
+            try {
+                var rawHist = localStorage.getItem('sunplay_history');
+                if (rawHist) {
+                    var hist = JSON.parse(rawHist);
+                    var updated = false;
+                    for (var h = 0; h < hist.length; h++) {
+                        if (hist[h].url === currentUrl) {
+                            hist[h].title = displayTitle;
+                            updated = true;
+                        }
+                    }
+                    if (updated) {
+                        localStorage.setItem('sunplay_history', JSON.stringify(hist));
+                        if (SunPlay.App && SunPlay.App.renderHistory) {
+                            SunPlay.App.renderHistory();
+                        }
+                    }
+                }
+            } catch (histErr) {}
+
             // Trigger OpenSubtitles with the real resolved title!
             fetchOpenSubtitles(displayTitle);
 
-            // Re-run fallback filename analysis on the real filename
-            var fallback = fallbackFilenameTracks(newFilename);
-            if (fallback) applyProbedTracks(fallback);
+            // Re-run fallback filename analysis on the real filename if no embedded tracks found
+            if (subtitleTracks.filter(function(s) { return s.type === 'embedded_mkv'; }).length === 0) {
+                var fallback = fallbackFilenameTracks(newFilename);
+                if (fallback) applyProbedTracks(fallback);
+            }
         }
     }
 
@@ -1957,28 +2057,98 @@ SunPlay.Player = (function () {
 
     /* ================= UTILITIES ================= */
 
-    function cleanStreamTitle(raw) {
-        if (!raw) return 'Stream';
+    function extractFilename(url) {
+        if (!url) return 'Stream';
         try {
-            var str = decodeURIComponent(raw.split('?')[0].split('/').pop());
-            // Remove file extension
-            str = str.replace(/\.[a-zA-Z0-9]{2,4}$/, '');
-            // Remove bracketed info e.g. [Hindi DDP 5.1 English ...]
-            str = str.replace(/[\[\(][^\]\)]*[\]\)]/g, ' ');
-            // Remove quality, codec and scene tags
-            str = str.replace(/\b(2160p|1080p|720p|480p|4k|uhd|bluray|remux|hdr|hdr10|dv|10bit|hevc|x265|x264|h264|h265|ddp|atmos|imax|truehd|web-dl|webrip|proper|repack|aac|dts|chd-uhdmovies)\b/gi, ' ');
-            str = str.replace(/[\._\+]/g, ' ');
-            str = str.replace(/\s{2,}/g, ' ').trim();
-            return str || 'Stream';
+            var str = url.trim();
+            if (str.indexOf('http') === 0) {
+                var parsed = null;
+                try { parsed = new URL(str); } catch (e) {}
+                if (parsed) {
+                    // 1. Check response-content-disposition or content-disposition
+                    var disp = parsed.searchParams.get('response-content-disposition') || 
+                               parsed.searchParams.get('content-disposition');
+                    if (disp) {
+                        var m = disp.match(/filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i);
+                        if (m && m[1]) return decodeURIComponent(m[1].trim().replace(/^['"]|['"]$/g, ''));
+                    }
+                    // 2. Check explicit filename/file/title/name params
+                    var fn = parsed.searchParams.get('filename') || parsed.searchParams.get('file') || 
+                             parsed.searchParams.get('title') || parsed.searchParams.get('name') ||
+                             parsed.searchParams.get('fn');
+                    if (fn) {
+                        return decodeURIComponent(fn.trim().replace(/^['"]|['"]$/g, ''));
+                    }
+                    // 3. Check pathname
+                    var parts = parsed.pathname.split('/').filter(Boolean);
+                    if (parts.length > 0) {
+                        var last = parts[parts.length - 1];
+                        if (/^(download|play|stream|view|watch|index\.(?:m3u8|mpd))$/i.test(last) && parts.length > 1) {
+                            last = parts[parts.length - 2];
+                        }
+                        return decodeURIComponent(last) || 'Stream';
+                    }
+                }
+            }
+            var raw = str.split('?')[0].split('/').pop();
+            return decodeURIComponent(raw) || 'Stream';
         } catch (e) {
             return 'Stream';
         }
     }
 
-    function extractFilename(url) {
+    function cleanStreamTitle(raw) {
+        if (!raw) return 'Stream';
         try {
-            var parts = url.split('?')[0].split('/');
-            return decodeURIComponent(parts[parts.length - 1]);
+            var str = extractFilename(raw);
+
+            // If string is pure cryptic hex hash (MD5/UUID) or short token without spaces/dots, return as-is
+            if (/^[a-f0-9]{24,64}$/i.test(str) || (/^[a-zA-Z0-9_-]{6,16}$/.test(str) && !/[\s._-]/.test(str))) {
+                return str;
+            }
+
+            // 1. Strip file extension
+            str = str.replace(/\.(mkv|mp4|avi|webm|ts|m3u8|mov|flv|wmv|m4v|mpg|mpeg)$/i, '');
+
+            // 2. Strip web domains / URLs generically (e.g. www.site.com, name.ms, group.org)
+            str = str.replace(/\b(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:com|org|net|ms|in|to|co|tv|cc|xyz|site|dev|io|club|vip|online|me|ru|cz|is|cx|gd|vg|st|pm|ac|al|app|top|biz|info)\b/gi, ' ');
+
+            // 3. Strip trailing release groups e.g. -HDHub4u, -FraMeSToR, -FLUX, -(CtrlHD-4kHdHub)
+            str = str.replace(/-\s*\(?[a-zA-Z0-9._-]+\)?$/gi, '');
+
+            // 4. Strip square brackets [ ... ] and curly braces { ... }
+            str = str.replace(/\[[^\]]*\]/g, ' ');
+            str = str.replace(/\{[^\}]*\}/g, ' ');
+
+            // 5. Replace dots, underscores, pluses with spaces
+            str = str.replace(/[\._\+]/g, ' ');
+
+            // 6. Check for TV Show pattern S01E01 or 1x01
+            var tvMatch = str.match(/^(.*?)\s+\b(S\d{1,2}(?:E\d{1,2})?|\d{1,2}x\d{1,2})\b/i);
+            if (tvMatch && tvMatch[1].trim().length > 1) {
+                var showName = tvMatch[1].replace(/\b(2160p|1080p|720p|4k|uhd|bluray|web-dl|webrip|hdr)\b.*$/gi, '').trim();
+                return (showName + ' ' + tvMatch[2].toUpperCase()).trim();
+            }
+
+            // 7. Check for Movie Year pattern (1900-2099)
+            var yearMatch = str.match(/^(.*?)\s*\(?(\b(?:19|20)\d{2}\b)\)?/);
+            if (yearMatch && yearMatch[1].trim().length > 1) {
+                var movieName = yearMatch[1].trim();
+                var year = yearMatch[2];
+                movieName = movieName.replace(/\b(2160p|1080p|720p|480p|4k|uhd|bluray|web-dl|webrip|hdr|remux)\b.*$/gi, '').trim();
+                if (movieName.length > 0) {
+                    return (movieName + ' (' + year + ')').trim();
+                }
+            }
+
+            // 8. If no year, cut off before the first technical tag
+            str = str.replace(/\b(2160p|1080p|720p|480p|576p|4k|uhd|bluray|blu-ray|remux|bdrip|brrip|web-dl|webrip|web|hdtv|hdrip|dvdrip|hevc|x265|x264|h264|h265|avc|hdr|hdr10|hdr10\+|dv|dolby|atmos|ddp|dd\+|truehd|dts|aac|ac3|flac|multi|subs?|esubs?|proper|repack)\b.*$/gi, '');
+
+            // Remove non-year parentheses
+            str = str.replace(/\([^)]*\)/g, ' ');
+            str = str.replace(/\s{2,}/g, ' ').trim();
+
+            return str || 'Stream';
         } catch (e) {
             return 'Stream';
         }
