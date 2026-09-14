@@ -53,7 +53,8 @@ SunPlay.Controls = (function() {
                     <button class="sp-btn sp-focusable" id="sp-btn-spd">⚡ 1.0x</button>
                     <button class="sp-btn sp-focusable" id="sp-btn-info">ℹ️ Info</button>
                 </div>
-                <div class="sp-debug-overlay" id="sp-debug-overlay" style="display:none; position:absolute; right:20px; top:120px; background:rgba(0,0,0,0.8); color:#0f0; padding:15px; font-size:18px; font-family:monospace; border:2px solid #0f0; border-radius:5px; pointer-events:none; z-index:9999;">
+                <div class="sp-debug-overlay" id="sp-debug-overlay" style="display:none; position:absolute; right:20px; top:80px; background:rgba(0,0,0,0.88); color:#0f0; padding:12px 16px; font-size:16px; font-family:monospace; border:2px solid #0f0; border-radius:8px; pointer-events:none; z-index:9999; max-width:420px; max-height:480px; overflow:hidden; word-break:break-all;">
+
                     <div style="font-weight:bold; margin-bottom:5px; border-bottom:1px solid #0f0;">DEBUG INFO</div>
                     <div>Video: <span id="dbg-vid">--</span></div>
                     <div>Audio: <span id="dbg-aud">--</span></div>

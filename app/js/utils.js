@@ -122,6 +122,17 @@ SunPlay.Utils = {
       try { parsed = new URL(str); } catch (e) {}
 
       if (parsed) {
+        var hostname = parsed.hostname.toLowerCase();
+
+        // 0. Known opaque CDN hostnames — entire path is a token, no filename possible
+        if (hostname.indexOf('googleusercontent.com') !== -1) return 'Google Drive Video';
+        if (hostname.indexOf('googlevideo.com') !== -1)        return 'YouTube Video';
+        if (hostname.indexOf('fbcdn.net') !== -1)              return 'Facebook Video';
+        if (hostname.indexOf('cdninstagram.com') !== -1)       return 'Instagram Video';
+        if (hostname.indexOf('twimg.com') !== -1)              return 'Twitter Video';
+        if (hostname.indexOf('akamaized.net') !== -1)          return 'Akamai Stream';
+        if (hostname.indexOf('cloudfront.net') !== -1)         return 'Cloud Stream';
+
         // 1. response-content-disposition header baked into URL (e.g., GCS signed URLs)
         var disp = parsed.searchParams.get('response-content-disposition') ||
                    parsed.searchParams.get('content-disposition');
@@ -142,46 +153,49 @@ SunPlay.Utils = {
           return this._cleanTitle(decodeURIComponent(qpTitle.trim()));
         }
 
-        // 3. Scan ALL path segments for something that looks like a real filename
-        //    (has a known video extension or contains dots + non-hex chars)
+        // 3. Scan path segments for a real filename (has known video extension)
         var parts = parsed.pathname.split('/').filter(Boolean);
-        var mediaExts = /\.(mkv|mp4|avi|ts|webm|m3u8|mpd|mov|flv|wmv|m4v|3gp|hevc|265|264)$/i;
-        var hasMediaExt = parts.filter(function(p) { return mediaExts.test(p); });
-        if (hasMediaExt.length > 0) {
-          return this._cleanTitle(decodeURIComponent(hasMediaExt[hasMediaExt.length - 1]));
+        var mediaExts = /\.(mkv|mp4|avi|ts|webm|m3u8|mpd|mov|flv|wmv|m4v|3gp)$/i;
+        var withExt = parts.filter(function(p) { return mediaExts.test(decodeURIComponent(p)); });
+        if (withExt.length > 0) {
+          return this._cleanTitle(decodeURIComponent(withExt[withExt.length - 1]));
         }
 
-        // 4. Look for a path segment that has a dot + non-hex chars (likely a real name vs token)
+        // 4. Find a path segment that looks like a real word/title (not a token)
         var meaningfulSegment = null;
         for (var i = parts.length - 1; i >= 0; i--) {
           var seg = parts[i];
           var decoded = '';
           try { decoded = decodeURIComponent(seg); } catch(e) { decoded = seg; }
-          // Skip if: all hex chars (CDN token), purely numeric, or a generic keyword
-          var isOpaqueToken = /^[0-9a-f]{20,}$/i.test(decoded);
-          var isGenericWord = /^(download|play|stream|view|watch|index|video|file|media|get|serve|proxy|content)$/i.test(decoded);
-          var isNumericId = /^\d+$/.test(decoded);
-          var hasDotAndText = /\..+/.test(decoded) && !/^[0-9a-f.]+$/i.test(decoded);
 
-          if (!isOpaqueToken && !isGenericWord && !isNumericId && decoded.length > 3) {
-            // Prefer segments with dots (filename-like) or spaces (title-like)
-            if (hasDotAndText || decoded.indexOf(' ') !== -1 || decoded.indexOf('%20') !== -1) {
+          // An "opaque token" is: long AND only base64url chars (A-Za-z0-9 + - _ = / +)
+          // AND has no spaces or dots (real filenames have at least one)
+          var isOpaqueToken = decoded.length > 25 &&
+                              /^[A-Za-z0-9\-_=+/]{25,}$/.test(decoded) &&
+                              decoded.indexOf('.') === -1 &&
+                              decoded.indexOf(' ') === -1;
+          var isGenericWord  = /^(download|play|stream|view|watch|index|video|file|media|get|serve|proxy|content|hls|dash)$/i.test(decoded);
+          var isNumericOnly  = /^\d+$/.test(decoded);
+
+          if (!isOpaqueToken && !isGenericWord && !isNumericOnly && decoded.length > 3) {
+            // Has dots or spaces — treat as a real title immediately
+            if (decoded.indexOf('.') !== -1 || decoded.indexOf(' ') !== -1) {
               meaningfulSegment = decoded;
               break;
             }
-            if (!meaningfulSegment) meaningfulSegment = decoded; // keep as fallback
+            if (!meaningfulSegment) meaningfulSegment = decoded; // short-word fallback
           }
         }
         if (meaningfulSegment) {
           return this._cleanTitle(meaningfulSegment);
         }
 
-        // 5. Fall back to hostname (e.g., "Video from drive.google.com")
-        var host = parsed.hostname.replace(/^www\./, '');
+        // 5. Fall back to a friendly hostname label
+        var host = hostname.replace(/^www\./, '');
         return 'Video from ' + host;
       }
 
-      // Non-URL: just take last path segment
+      // Non-URL string: take last path segment
       var raw = str.split('?')[0].split('/').pop();
       return this._cleanTitle(decodeURIComponent(raw)) || 'Video Stream';
     } catch (e) {

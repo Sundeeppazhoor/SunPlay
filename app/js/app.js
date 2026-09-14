@@ -308,10 +308,25 @@ SunPlay.App = (function () {
             card.setAttribute('data-url', item.url);
 
             var timeAgo = getTimeAgo(item.timestamp);
-            var displayTitle = item.title || 'Unknown';
-            if (displayTitle.length > 40) {
-                displayTitle = displayTitle.substring(0, 40) + '...';
+
+            // Re-extract title if stored one looks like a raw token/URL (old entries)
+            var displayTitle = item.title || '';
+            var titleLooksStale = !displayTitle ||
+                displayTitle.startsWith('http') ||
+                (displayTitle.length > 60 && displayTitle.indexOf(' ') === -1) ||
+                displayTitle === 'Stream' ||
+                displayTitle === 'Unknown File' ||
+                displayTitle === 'Video Stream';
+            if (titleLooksStale && item.url && SunPlay.Utils && SunPlay.Utils.extractTitle) {
+                displayTitle = SunPlay.Utils.extractTitle(item.url);
+                // Quietly update stored entry so it's fixed next time too
+                item.title = displayTitle;
             }
+            if (!displayTitle) displayTitle = 'Unknown';
+            if (displayTitle.length > 45) {
+                displayTitle = displayTitle.substring(0, 45) + '…';
+            }
+
 
             card.innerHTML =
                 '<div class="history-card-icon">' +
