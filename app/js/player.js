@@ -72,6 +72,33 @@ SunPlay.Player = (function() {
         } catch(e) {}
     }
 
+    /**
+     * Auto-enable the first embedded subtitle/caption track if available.
+     * Called after loadedmetadata (and again 1.5s later for webOS native pipeline).
+     */
+    function autoEnableEmbeddedSubs() {
+        if (!video || !video.textTracks || video.textTracks.length === 0) return;
+        var alreadyShowing = false;
+        for (var i = 0; i < video.textTracks.length; i++) {
+            if (video.textTracks[i].mode === 'showing') {
+                alreadyShowing = true;
+                break;
+            }
+        }
+        if (alreadyShowing) return; // user already picked one, don't override
+
+        // Enable the first subtitle or captions track
+        for (var j = 0; j < video.textTracks.length; j++) {
+            var t = video.textTracks[j];
+            if (t.kind === 'subtitles' || t.kind === 'captions') {
+                t.mode = 'showing';
+                console.log('[SunPlay] Auto-enabled embedded subtitle track:', t.label || ('Track ' + j), t.language);
+                EventEmitter.emit('subtitleChanged');
+                break;
+            }
+        }
+    }
+
     function attachEvents() {
         video.addEventListener('play', () => {
             updateState('playing');
@@ -101,6 +128,10 @@ SunPlay.Player = (function() {
         });
         video.addEventListener('loadedmetadata', () => {
             EventEmitter.emit('loaded', { duration: video.duration, videoWidth: video.videoWidth, videoHeight: video.videoHeight });
+            // Auto-detect and enable embedded subtitles
+            autoEnableEmbeddedSubs();
+            // Second check after short delay — webOS native pipeline may expose tracks late
+            setTimeout(autoEnableEmbeddedSubs, 1500);
         });
         video.addEventListener('seeking', () => EventEmitter.emit('seeking', { currentTime: video.currentTime }));
         video.addEventListener('seeked', () => EventEmitter.emit('seeked', { currentTime: video.currentTime }));

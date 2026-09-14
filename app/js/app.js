@@ -229,11 +229,9 @@ SunPlay.App = (function () {
         console.log('[SunPlay] Playing URL:', url.substring(0, 100) + '...');
 
         // Extract clean display title from URL
-        var title = 'Stream';
-        if (SunPlay.Player && SunPlay.Player.cleanStreamTitle) {
-            title = SunPlay.Player.cleanStreamTitle(url);
-        } else if (SunPlay.Utils) {
-            title = SunPlay.Utils.extractFilename(url) || 'Stream';
+        var title = 'Video Stream';
+        if (SunPlay.Utils && SunPlay.Utils.extractTitle) {
+            title = SunPlay.Utils.extractTitle(url) || 'Video Stream';
         }
 
         // Add to history

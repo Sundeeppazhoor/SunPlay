@@ -100,47 +100,118 @@ SunPlay.Utils = {
   },
 
   /**
-   * Extract filename from URL
-   * @param {string} url 
+   * Extract a human-readable title from a URL.
+   * Handles CDN tokens, Google Drive/Googleusercontent URLs, encoded filenames, etc.
+   * @param {string} url
    * @returns {string}
    */
   extractFilename: function(url) {
-    if (!url) return 'Unknown File';
+    return this.extractTitle(url);
+  },
+
+  /**
+   * Core title extraction logic — tries multiple strategies in order.
+   * @param {string} url
+   * @returns {string}
+   */
+  extractTitle: function(url) {
+    if (!url) return 'Video Stream';
     try {
       var str = url.trim();
-      if (str.indexOf('http') === 0) {
-        var parsed = null;
-        try { parsed = new URL(str); } catch (e) {}
-        if (parsed) {
-          // 1. Check response-content-disposition or content-disposition
-          var disp = parsed.searchParams.get('response-content-disposition') || 
-                     parsed.searchParams.get('content-disposition');
-          if (disp) {
-            var m = disp.match(/filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?/i);
-            if (m && m[1]) return decodeURIComponent(m[1].trim().replace(/^['"]|['"]$/g, ''));
-          }
-          // 2. Check explicit filename/file/title/name params
-          var fn = parsed.searchParams.get('filename') || parsed.searchParams.get('file') || 
-                   parsed.searchParams.get('title') || parsed.searchParams.get('name') ||
-                   parsed.searchParams.get('fn');
-          if (fn) {
-            return decodeURIComponent(fn.trim().replace(/^['"]|['"]$/g, ''));
-          }
-          // 3. Check pathname
-          var parts = parsed.pathname.split('/').filter(Boolean);
-          if (parts.length > 0) {
-            var last = parts[parts.length - 1];
-            if (/^(download|play|stream|view|watch|index\.(?:m3u8|mpd))$/i.test(last) && parts.length > 1) {
-              last = parts[parts.length - 2];
-            }
-            return decodeURIComponent(last) || 'Unknown File';
+      var parsed = null;
+      try { parsed = new URL(str); } catch (e) {}
+
+      if (parsed) {
+        // 1. response-content-disposition header baked into URL (e.g., GCS signed URLs)
+        var disp = parsed.searchParams.get('response-content-disposition') ||
+                   parsed.searchParams.get('content-disposition');
+        if (disp) {
+          var dm = disp.match(/filename\*?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']+)['"]?/i);
+          if (dm && dm[1]) {
+            return this._cleanTitle(decodeURIComponent(dm[1].trim().replace(/^['"]|['"]$/g, '')));
           }
         }
+
+        // 2. Explicit query params: title, filename, file, name, fn
+        var qpTitle = parsed.searchParams.get('title') ||
+                      parsed.searchParams.get('filename') ||
+                      parsed.searchParams.get('file') ||
+                      parsed.searchParams.get('name') ||
+                      parsed.searchParams.get('fn');
+        if (qpTitle) {
+          return this._cleanTitle(decodeURIComponent(qpTitle.trim()));
+        }
+
+        // 3. Scan ALL path segments for something that looks like a real filename
+        //    (has a known video extension or contains dots + non-hex chars)
+        var parts = parsed.pathname.split('/').filter(Boolean);
+        var mediaExts = /\.(mkv|mp4|avi|ts|webm|m3u8|mpd|mov|flv|wmv|m4v|3gp|hevc|265|264)$/i;
+        var hasMediaExt = parts.filter(function(p) { return mediaExts.test(p); });
+        if (hasMediaExt.length > 0) {
+          return this._cleanTitle(decodeURIComponent(hasMediaExt[hasMediaExt.length - 1]));
+        }
+
+        // 4. Look for a path segment that has a dot + non-hex chars (likely a real name vs token)
+        var meaningfulSegment = null;
+        for (var i = parts.length - 1; i >= 0; i--) {
+          var seg = parts[i];
+          var decoded = '';
+          try { decoded = decodeURIComponent(seg); } catch(e) { decoded = seg; }
+          // Skip if: all hex chars (CDN token), purely numeric, or a generic keyword
+          var isOpaqueToken = /^[0-9a-f]{20,}$/i.test(decoded);
+          var isGenericWord = /^(download|play|stream|view|watch|index|video|file|media|get|serve|proxy|content)$/i.test(decoded);
+          var isNumericId = /^\d+$/.test(decoded);
+          var hasDotAndText = /\..+/.test(decoded) && !/^[0-9a-f.]+$/i.test(decoded);
+
+          if (!isOpaqueToken && !isGenericWord && !isNumericId && decoded.length > 3) {
+            // Prefer segments with dots (filename-like) or spaces (title-like)
+            if (hasDotAndText || decoded.indexOf(' ') !== -1 || decoded.indexOf('%20') !== -1) {
+              meaningfulSegment = decoded;
+              break;
+            }
+            if (!meaningfulSegment) meaningfulSegment = decoded; // keep as fallback
+          }
+        }
+        if (meaningfulSegment) {
+          return this._cleanTitle(meaningfulSegment);
+        }
+
+        // 5. Fall back to hostname (e.g., "Video from drive.google.com")
+        var host = parsed.hostname.replace(/^www\./, '');
+        return 'Video from ' + host;
       }
+
+      // Non-URL: just take last path segment
       var raw = str.split('?')[0].split('/').pop();
-      return decodeURIComponent(raw) || 'Unknown File';
+      return this._cleanTitle(decodeURIComponent(raw)) || 'Video Stream';
     } catch (e) {
-      return 'Unknown File';
+      return 'Video Stream';
+    }
+  },
+
+  /**
+   * Clean up a raw filename/title: remove codec tags, extra dots, URL noise.
+   * @param {string} raw
+   * @returns {string}
+   */
+  _cleanTitle: function(raw) {
+    if (!raw) return 'Video Stream';
+    try {
+      var t = decodeURIComponent(raw).trim();
+      // Remove common codec/quality tags from end of filename
+      t = t.replace(/\.(mkv|mp4|avi|ts|webm|m4v|mov|flv|wmv|3gp)$/i, '');
+      // Replace dots/underscores used as spaces (but not in the middle of abbreviations)
+      // Only replace if they look like word separators (surrounded by word chars)
+      t = t.replace(/\.(?=[^\s])/g, ' '); // dots → spaces
+      t = t.replace(/_/g, ' ');
+      // Remove bracketed codec/quality info: [Hindi DDP 5.1], (2025), IMAX, UHD, BluRay, REMUX, x265, HEVC etc.
+      t = t.replace(/\s*[\(\[][^\)\]]{1,60}[\)\]]\s*/g, ' ');
+      t = t.replace(/\s+(IMAX|UHD|HDR|SDR|BluRay|Blu-Ray|REMUX|HDTV|WEBRip|WEB-DL|DVDRip|BRRip|x264|x265|HEVC|AVC|FLAC|DTS|AAC|DDP|Atmos|10bit|4K|1080p|720p|480p|2160p|DV|HDR10|CHD|YTS|YIFY)\S*/gi, ' ');
+      // Collapse multiple spaces
+      t = t.replace(/\s{2,}/g, ' ').trim();
+      return t || 'Video Stream';
+    } catch(e) {
+      return raw || 'Video Stream';
     }
   },
 
