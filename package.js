@@ -35,4 +35,4 @@ console.log('  Size: ' + (stat.size / 1024).toFixed(1) + ' KB');
 console.log('  Path: ' + ipkPath);
 console.log('\n[SUCCESS] Ready to install on LG webOS TV:');
 console.log('  ares-install "' + ipkPath + '" -d <device>');
-console.log('  ares-launch com.sunplay.native -d <device>');
+console.log('  ares-launch com.sunplay.player -d <device>');

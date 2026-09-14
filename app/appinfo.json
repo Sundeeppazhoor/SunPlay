@@ -1,6 +1,6 @@
 {
-  "id": "com.sunplay.native",
-  "version": "1.0.0",
+  "id": "com.sunplay.player",
+  "version": "1.0.1",
   "vendor": "SunPlay",
   "type": "web",
   "main": "index.html",
@@ -12,14 +12,8 @@
   "resolution": "1920x1080",
   "disableBackHistoryAPI": true,
   "handlesRelaunch": true,
-  "trustLevel": "trusted",
-  "allowCrossDomain": true,
-  "requiredPermissions": [
-    "all"
-  ],
+  "requiredPermissions": ["all"],
   "requiredACG": [],
-  "requiredFeatures": [
-    "screen.size.all"
-  ],
-  "appDescription": "SunPlay - High Performance Zero-Copy Media Player for webOS."
+  "requiredFeatures": ["screen.size.all"],
+  "appDescription": "SunPlay - A powerful native media player for LG TV. Stream 4K HDR content, switch audio/subtitle tracks, and cast URLs from your phone via QR code."
 }
