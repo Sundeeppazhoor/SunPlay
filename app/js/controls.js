@@ -308,27 +308,270 @@ SunPlay.Controls = (function() {
         resetAutoHide();
     }
 
+    // ============================================================
+    // SUBTITLE MODAL — embedded tracks + OpenSubtitles search
+    // ============================================================
+    var subModal = null;
+    var subModalFocusables = [];
+    var subModalFocusIdx = 0;
+    var subSearchResults = [];
+    var currentVideoTitle = '';
+
     function openSubtitlePopup() {
-        var tracks = player.getSubtitleTracks();
-        var list = [{ id: 'off', label: 'Off' }];
-        var activeId = 'off';
-        
-        tracks.forEach(t => {
-            list.push({ id: t.id, label: t.label + (t.language ? ' [' + t.language + ']' : '') });
-            if (t.mode === 'showing') activeId = t.id;
-        });
-        
-        if (tracks.length === 0) {
-            list.push({ id: 'none', label: '⚠ No subtitles detected' });
-            list.push({ id: 'info', label: 'Embedded subs need LG Native Player' });
+        currentVideoTitle = (window._spCurrentTitle || '').replace(/\s*(Google Drive|YouTube|Video from\s+\S+)\s*/i, '').trim();
+        buildSubModal();
+    }
+
+    function buildSubModal() {
+        if (!subModal) {
+            subModal = document.createElement('div');
+            subModal.id = 'sp-sub-modal';
+            subModal.style.cssText = [
+                'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000',
+                'display:flex;align-items:center;justify-content:center'
+            ].join(';');
+            document.body.appendChild(subModal);
         }
-        
-        showPopup('Subtitles', list, activeId, (selected) => {
-            if (selected.id === 'off') player.disableSubtitles();
-            else if (selected.id === 'none' || selected.id === 'info') { /* do nothing */ }
-            else player.setSubtitleTrack(selected.id);
+
+        var embeddedTracks = player.getSubtitleTracks();
+        var embeddedHtml = '';
+        if (embeddedTracks.length > 0) {
+            embeddedHtml = '<div class="sp-sub-section-label">Embedded Tracks</div>';
+            embeddedTracks.forEach(function(t, i) {
+                var active = t.mode === 'showing' ? ' sp-sub-active' : '';
+                embeddedHtml += '<button class="sp-sub-item sp-sub-embedded' + active + '" data-trackid="' + t.id + '">' +
+                    '🎬 ' + (t.label || ('Track ' + (i+1))) + (t.language ? ' [' + t.language + ']' : '') +
+                    '</button>';
+            });
+            embeddedHtml += '<button class="sp-sub-item sp-sub-off" data-trackid="off">🔇 Turn Off Subtitles</button>';
+        }
+
+        subModal.innerHTML = '<div class="sp-sub-box">' +
+            '<div class="sp-sub-header">' +
+                '<span class="sp-sub-title-label">💬 Subtitles</span>' +
+                '<span class="sp-sub-close" id="sp-sub-close">✕ Close</span>' +
+            '</div>' +
+            (embeddedHtml || '<div class="sp-sub-section-label" style="color:#888;">No embedded tracks detected</div>') +
+            '<div class="sp-sub-section-label" style="margin-top:16px;">Search OpenSubtitles.org</div>' +
+            '<div class="sp-sub-search-row">' +
+                '<input id="sp-sub-searchbox" class="sp-sub-input" type="text" placeholder="Movie / show name..." value="' + escapeAttr(currentVideoTitle) + '" />' +
+                '<button class="sp-sub-item sp-sub-search-btn" id="sp-sub-search-btn">🔍 Search</button>' +
+            '</div>' +
+            '<div id="sp-sub-results" class="sp-sub-results"></div>' +
+            '<div class="sp-sub-section-label" style="margin-top:12px;">Paste Subtitle URL (.srt / .vtt)</div>' +
+            '<div class="sp-sub-search-row">' +
+                '<input id="sp-sub-urlbox" class="sp-sub-input" type="text" placeholder="https://..." />' +
+                '<button class="sp-sub-item sp-sub-url-btn" id="sp-sub-url-btn">▶ Load</button>' +
+            '</div>' +
+        '</div>';
+
+        subModal.style.display = 'flex';
+        injectSubStyles();
+        bindSubModal();
+        refreshSubFocusables();
+        if (subModalFocusables.length > 0) {
+            subModalFocusIdx = 0;
+            subModalFocusables[0].focus();
+        }
+    }
+
+    function escapeAttr(s) {
+        return (s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    function refreshSubFocusables() {
+        subModalFocusables = Array.from(subModal.querySelectorAll('button, input'));
+        subModalFocusIdx = 0;
+    }
+
+    function bindSubModal() {
+        // Embedded track buttons
+        subModal.querySelectorAll('.sp-sub-embedded').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var id = parseInt(btn.getAttribute('data-trackid'));
+                player.setSubtitleTrack(id);
+                closeSubModal();
+            });
+        });
+        var offBtn = subModal.querySelector('.sp-sub-off');
+        if (offBtn) offBtn.addEventListener('click', function() { player.disableSubtitles(); closeSubModal(); });
+
+        // Close
+        var closeBtn = document.getElementById('sp-sub-close');
+        if (closeBtn) closeBtn.addEventListener('click', closeSubModal);
+
+        // Search
+        var searchBtn = document.getElementById('sp-sub-search-btn');
+        var searchBox = document.getElementById('sp-sub-searchbox');
+        if (searchBtn) searchBtn.addEventListener('click', function() { doSubSearch(searchBox.value.trim()); });
+        if (searchBox) {
+            searchBox.addEventListener('keydown', function(e) {
+                if (e.keyCode === 13) { e.preventDefault(); doSubSearch(searchBox.value.trim()); }
+                e.stopPropagation();
+            });
+        }
+
+        // Paste URL
+        var urlBtn = document.getElementById('sp-sub-url-btn');
+        var urlBox = document.getElementById('sp-sub-urlbox');
+        if (urlBtn) urlBtn.addEventListener('click', function() { loadSubFromUrl(urlBox.value.trim()); });
+        if (urlBox) {
+            urlBox.addEventListener('keydown', function(e) {
+                if (e.keyCode === 13) { e.preventDefault(); loadSubFromUrl(urlBox.value.trim()); }
+                e.stopPropagation();
+            });
+        }
+
+        // Remote nav for the whole modal
+        subModal.addEventListener('keydown', handleSubModalKey);
+    }
+
+    function handleSubModalKey(e) {
+        var key = e.keyCode;
+        if (key === 461 || key === 8 || key === 27) { // Back/Esc
+            closeSubModal();
+            e.preventDefault();
+            return;
+        }
+        if (key === 38 || key === 40) { // Up/Down
+            refreshSubFocusables();
+            if (key === 38) subModalFocusIdx = Math.max(0, subModalFocusIdx - 1);
+            else subModalFocusIdx = Math.min(subModalFocusables.length - 1, subModalFocusIdx + 1);
+            subModalFocusables[subModalFocusIdx].focus();
+            e.preventDefault();
+        }
+    }
+
+    function doSubSearch(query) {
+        if (!query) return;
+        var resultsEl = document.getElementById('sp-sub-results');
+        if (!resultsEl) return;
+        resultsEl.innerHTML = '<div class="sp-sub-loading">🔍 Searching OpenSubtitles...</div>';
+
+        // OpenSubtitles API — uses a public API key for open-source apps
+        var apiUrl = 'https://api.opensubtitles.com/api/v1/subtitles?query=' +
+            encodeURIComponent(query) + '&languages=en&type=movie';
+
+        fetch(apiUrl, {
+            headers: {
+                'Api-Key': 'sJAbxJNrPBGGqfvbEDDjQFaQVWiZhQGx',
+                'Content-Type': 'application/json',
+                'User-Agent': 'SunPlay v1.0'
+            }
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            subSearchResults = (data.data || []).slice(0, 12);
+            renderSubResults(subSearchResults);
+        })
+        .catch(function(err) {
+            resultsEl.innerHTML = '<div class="sp-sub-loading" style="color:#f66;">Search failed. Check your internet connection.</div>';
         });
     }
+
+    function renderSubResults(results) {
+        var resultsEl = document.getElementById('sp-sub-results');
+        if (!resultsEl) return;
+        if (!results || results.length === 0) {
+            resultsEl.innerHTML = '<div class="sp-sub-loading" style="color:#fa0;">No results. Try a different title.</div>';
+            return;
+        }
+        var html = '';
+        results.forEach(function(item, idx) {
+            var attrs = item.attributes || {};
+            var files = attrs.files || [];
+            var fileId = files.length > 0 ? files[0].file_id : null;
+            var title = attrs.feature_details ? attrs.feature_details.movie_name : (attrs.release || 'Unknown');
+            var lang = attrs.language || 'en';
+            var downloads = attrs.download_count || 0;
+            var rating = attrs.ratings ? parseFloat(attrs.ratings).toFixed(1) : '';
+            if (!fileId) return;
+            html += '<button class="sp-sub-item sp-sub-result" data-fileid="' + fileId + '" data-title="' + escapeAttr(title) + '">' +
+                '📄 ' + escapeAttr(title.substring(0, 38)) + (title.length > 38 ? '…' : '') +
+                ' <span style="opacity:0.6;font-size:0.85em;">[' + lang + ']' + (rating ? ' ★' + rating : '') + ' ↓' + downloads + '</span>' +
+                '</button>';
+        });
+        resultsEl.innerHTML = html || '<div class="sp-sub-loading" style="color:#fa0;">No downloadable results.</div>';
+
+        // Bind result clicks
+        resultsEl.querySelectorAll('.sp-sub-result').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                downloadAndApplySub(btn.getAttribute('data-fileid'), btn.getAttribute('data-title'));
+            });
+        });
+        refreshSubFocusables();
+    }
+
+    function downloadAndApplySub(fileId, title) {
+        var resultsEl = document.getElementById('sp-sub-results');
+        if (resultsEl) resultsEl.innerHTML = '<div class="sp-sub-loading">⏳ Loading subtitle...</div>';
+
+        fetch('https://api.opensubtitles.com/api/v1/download', {
+            method: 'POST',
+            headers: {
+                'Api-Key': 'sJAbxJNrPBGGqfvbEDDjQFaQVWiZhQGx',
+                'Content-Type': 'application/json',
+                'User-Agent': 'SunPlay v1.0'
+            },
+            body: JSON.stringify({ file_id: parseInt(fileId) })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.link) {
+                player.addExternalSubtitle(data.link, title || 'Subtitle', 'en');
+                closeSubModal();
+                // Show a toast if available
+                if (window.SunPlay && SunPlay.App && SunPlay.App.showToast) {
+                    SunPlay.App.showToast('Subtitle loaded: ' + (title || '').substring(0, 30));
+                }
+            } else {
+                if (resultsEl) resultsEl.innerHTML = '<div class="sp-sub-loading" style="color:#f66;">Download failed. Daily limit may be reached.</div>';
+            }
+        })
+        .catch(function() {
+            if (resultsEl) resultsEl.innerHTML = '<div class="sp-sub-loading" style="color:#f66;">Download failed.</div>';
+        });
+    }
+
+    function loadSubFromUrl(url) {
+        if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) return;
+        player.addExternalSubtitle(url, 'External Subtitle', 'en');
+        closeSubModal();
+    }
+
+    function closeSubModal() {
+        if (subModal) subModal.style.display = 'none';
+        resetAutoHide();
+        // Remove keydown listener to avoid leaks
+        if (subModal) subModal.removeEventListener('keydown', handleSubModalKey);
+    }
+
+    function injectSubStyles() {
+        if (document.getElementById('sp-sub-styles')) return;
+        var s = document.createElement('style');
+        s.id = 'sp-sub-styles';
+        s.textContent = [
+            '.sp-sub-box{background:#141428;border:2px solid #333;border-radius:16px;padding:28px 32px;width:700px;max-width:90vw;max-height:80vh;overflow-y:auto;color:#fff;font-family:sans-serif;}',
+            '.sp-sub-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;border-bottom:1px solid #333;padding-bottom:12px;}',
+            '.sp-sub-title-label{font-size:24px;font-weight:700;color:#FFD700;}',
+            '.sp-sub-close{font-size:18px;color:#888;cursor:pointer;padding:4px 10px;border-radius:6px;}',
+            '.sp-sub-close:hover,.sp-sub-close:focus{color:#fff;background:#333;outline:none;}',
+            '.sp-sub-section-label{font-size:15px;color:#aaa;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.06em;}',
+            '.sp-sub-item{display:block;width:100%;text-align:left;background:#1e1e3a;border:1px solid #333;border-radius:8px;color:#ddd;padding:10px 16px;margin-bottom:6px;font-size:18px;cursor:pointer;}',
+            '.sp-sub-item:hover,.sp-sub-item:focus{background:#2a2a50;border-color:#FFD700;color:#fff;outline:none;}',
+            '.sp-sub-active{border-color:#FFD700!important;color:#FFD700!important;}',
+            '.sp-sub-search-row{display:flex;gap:10px;margin-bottom:10px;}',
+            '.sp-sub-input{flex:1;background:#0d0d24;border:1px solid #444;border-radius:8px;color:#fff;padding:10px 14px;font-size:18px;}',
+            '.sp-sub-input:focus{border-color:#FFD700;outline:none;}',
+            '.sp-sub-search-btn,.sp-sub-url-btn{flex-shrink:0;width:auto;padding:10px 18px;}',
+            '.sp-sub-results{max-height:200px;overflow-y:auto;margin-top:4px;}',
+            '.sp-sub-loading{color:#aaa;padding:10px 4px;font-size:16px;}',
+            '.sp-sub-result{font-size:16px;padding:8px 14px;}'
+        ].join('');
+        document.head.appendChild(s);
+    }
+
+
 
     function openAudioPopup() {
         var tracks = player.getAudioTracks();

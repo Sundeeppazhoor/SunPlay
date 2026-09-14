@@ -219,7 +219,10 @@ SunPlay.Player = (function() {
             currentUrl = url;
             currentOptions = options;
             
-            if (options.title) EventEmitter.emit('title', options.title);
+        if (options.title) {
+                window._spCurrentTitle = options.title; // used by subtitle search modal
+                EventEmitter.emit('title', options.title);
+            }
             
             var startPos = options.startPosition !== undefined ? options.startPosition : checkResumePosition(url);
             
