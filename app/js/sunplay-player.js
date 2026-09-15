@@ -285,10 +285,10 @@ SunPlay.Player = (function () {
         resolveRealMetadata(url);
 
         // 2. Search OpenSubtitles with cleaned title
-        fetchOpenSubtitles(displayTitle);
+        // fetchOpenSubtitles(displayTitle);
 
         // 3. Probe for companion sidecar subtitles (.srt, .vtt)
-        probeSidecarSubtitles(url);
+        // probeSidecarSubtitles(url);
 
         // 4. Probe embedded container tracks (MKV/MP4 EBML header + release tags)
         probeContainerTracks(url);
@@ -516,14 +516,36 @@ SunPlay.Player = (function () {
 
     /* ================= SUBTITLES & AUDIO ================= */
 
+    function getSubtitleSearchQuery() {
+        var q = displayTitle;
+        if (currentRawTitle) {
+            var tvMatch = currentRawTitle.match(/\bS(\d{1,2})E(\d{1,2})\b/i) || currentRawTitle.match(/\b(\d{1,2})x(\d{1,2})\b/i);
+            if (tvMatch) {
+                q += ' ' + tvMatch[0].toUpperCase();
+            }
+        }
+        return q;
+    }
+
     function fetchOpenSubtitles(title, callback) {
         if (!title || title === 'Stream') {
             if (callback) callback(0);
             return;
         }
 
+        var season = 1;
+        var episode = 1;
+        var cleanSearch = title;
+        
+        var tvMatch = title.match(/\bS(\d{1,2})E(\d{1,2})\b/i) || title.match(/\b(\d{1,2})x(\d{1,2})\b/i);
+        if (tvMatch) {
+            season = parseInt(tvMatch[1], 10);
+            episode = parseInt(tvMatch[2], 10);
+            cleanSearch = title.substring(0, tvMatch.index).trim();
+        }
+
         // Normalize title: remove parentheses e.g. "Thudarum (2025)" -> "Thudarum 2025"
-        var cleanSearch = title.replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+        cleanSearch = cleanSearch.replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
         console.log('[SunPlay.Player] Searching OpenSubtitles via Cinemeta for:', cleanSearch);
 
         function queryCinemeta(query) {
@@ -546,20 +568,27 @@ SunPlay.Player = (function () {
                 });
         }
 
-        queryCinemeta(cleanSearch)
-            .then(function (res) {
-                if (res) return res;
-                // If cleanSearch had a 4-digit year, try search without year
-                var noYear = cleanSearch.replace(/\b(?:19|20)\d{2}\b/g, '').trim();
-                if (noYear && noYear !== cleanSearch && noYear.length > 1) {
-                    return queryCinemeta(noYear);
-                }
-                return null;
-            })
-            .then(function (res) {
-                if (res) return res;
-                return queryCinemetaSeries(cleanSearch);
-            })
+        var metaPromise;
+        if (tvMatch) {
+            metaPromise = queryCinemetaSeries(cleanSearch);
+        } else {
+            metaPromise = queryCinemeta(cleanSearch)
+                .then(function (res) {
+                    if (res) return res;
+                    // If cleanSearch had a 4-digit year, try search without year
+                    var noYear = cleanSearch.replace(/\b(?:19|20)\d{2}\b/g, '').trim();
+                    if (noYear && noYear !== cleanSearch && noYear.length > 1) {
+                        return queryCinemeta(noYear);
+                    }
+                    return null;
+                })
+                .then(function (res) {
+                    if (res) return res;
+                    return queryCinemetaSeries(cleanSearch);
+                });
+        }
+
+        metaPromise
             .then(function (meta) {
                 if (!meta || !meta.id) {
                     console.log('[SunPlay.Player] No IMDb ID matched for title:', cleanSearch);
@@ -568,7 +597,7 @@ SunPlay.Player = (function () {
                 }
                 console.log('[SunPlay.Player] Resolved IMDb ID:', meta.id);
                 var subUrl = meta.type === 'series'
-                    ? ('https://opensubtitles-v3.strem.io/subtitles/series/' + meta.id + ':1:1.json')
+                    ? ('https://opensubtitles-v3.strem.io/subtitles/series/' + meta.id + ':' + season + ':' + episode + '.json')
                     : ('https://opensubtitles-v3.strem.io/subtitles/movie/' + meta.id + '.json');
 
                 return fetch(subUrl, { method: 'GET' })
@@ -578,6 +607,31 @@ SunPlay.Player = (function () {
                         if (data && data.subtitles && data.subtitles.length > 0) {
                             console.log('[SunPlay.Player] Found ' + data.subtitles.length + ' OpenSubtitles');
                             data.subtitles.forEach(function (s, idx) {
+                                // Nuvio episode correctness check
+                                if (tvMatch) {
+                                    var t = s.season !== undefined && s.season !== null ? parseInt(s.season, 10) : -1;
+                                    var e = s.episode !== undefined && s.episode !== null ? parseInt(s.episode, 10) : -1;
+                                    
+                                    // If strict season/episode fields exist and are wrong, discard immediately
+                                    if ((t >= 0 && t !== season) || (e >= 0 && e !== episode)) {
+                                        return; 
+                                    }
+                                    
+                                    // If the API didn't provide season/episode, verify using filename
+                                    if (t < 0 && e < 0) {
+                                        var rawFn = (s.subtitleFileName || s.movieReleaseName || '').toLowerCase();
+                                        var fnMatch = rawFn.match(/s(\d{1,2})e(\d{1,2})/i) || rawFn.match(/(\d{1,2})x(\d{1,2})/i);
+                                        if (fnMatch) {
+                                            var nt = parseInt(fnMatch[1], 10);
+                                            var ne = parseInt(fnMatch[2], 10);
+                                            if (nt !== season || ne !== episode) {
+                                                return; // Filename marker is wrong, discard!
+                                            }
+                                        }
+                                        // If filename has no markers, we have to accept it blindly
+                                    }
+                                }
+
                                 var exists = subtitleTracks.some(function(t) { return t.url === s.url; });
                                 if (!exists) {
                                     var langCode = (s.lang || 'en').toLowerCase();
@@ -589,12 +643,12 @@ SunPlay.Player = (function () {
                                     rawFn = rawFn.replace(/\.(srt|vtt)$/i, '');
                                     rawFn = rawFn.replace(/\b(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.(?:com|org|net|ms|in|to|co|tv|cc|xyz|site|dev|io|me|ru)\b/gi, '');
                                     rawFn = rawFn.replace(/[\._]/g, ' ').replace(/\s{2,}/g, ' ').trim();
-                                    var fnSnippet = rawFn ? (' · ' + rawFn.substring(0, 24)) : '';
+                                    var fnSnippet = rawFn ? (' · ' + rawFn.substring(0, 30)) : '';
 
                                     subtitleTracks.push({
                                         id: 'os_' + (subtitleTracks.length + idx),
                                         type: 'opensubtitles',
-                                        label: langLabel + fnSnippet,
+                                        label: 'OpenSubtitles · ' + langLabel + fnSnippet,
                                         language: langCode,
                                         url: s.url,
                                         cues: []
@@ -947,6 +1001,9 @@ SunPlay.Player = (function () {
                 if (sheetOpen === 'sub') {
                     renderSubtitleSheetHTML();
                 }
+                if (selectedSubtitleIndex === -1 && subtitleTracks.length > 0) {
+                    selectSubtitle(0);
+                }
             }
         }
 
@@ -1044,7 +1101,7 @@ SunPlay.Player = (function () {
             } catch (histErr) {}
 
             // Trigger OpenSubtitles with the real resolved title!
-            fetchOpenSubtitles(displayTitle);
+            // fetchOpenSubtitles(displayTitle);
 
             // Re-run fallback filename analysis on the real filename if no embedded tracks found
             if (subtitleTracks.filter(function(s) { return s.type === 'embedded_mkv'; }).length === 0) {
@@ -1166,6 +1223,9 @@ SunPlay.Player = (function () {
         updateSubtitleBadge();
         if (sheetOpen === 'sub') {
             renderSubtitleSheetHTML();
+        }
+        if (selectedSubtitleIndex === -1 && subtitleTracks.length > 0) {
+            selectSubtitle(0);
         }
     }
 
@@ -1289,64 +1349,16 @@ SunPlay.Player = (function () {
             if (track.isBitmap) {
                 // BluRay PGS/SUP bitmap graphic track
                 if (SunPlay.App && SunPlay.App.showToast) {
-                    SunPlay.App.showToast('PGS is BluRay image format. Pairing with ' + langName + ' text subtitle...');
+                    SunPlay.App.showToast('PGS is BluRay image format. WebOS native player may render this automatically.');
                 }
             } else {
                 if (SunPlay.App && SunPlay.App.showToast) {
                     SunPlay.App.showToast('Selected ' + track.label);
                 }
             }
-
-            // Look for matching OpenSubtitles or sidecar track for this language
-            var matchedOs = subtitleTracks.find(function (t) {
-                return (t.type === 'opensubtitles') && t.language && track.language &&
-                       (t.language.toLowerCase() === track.language.toLowerCase() ||
-                        t.language.toLowerCase().indexOf(track.language.toLowerCase()) !== -1 ||
-                        track.language.toLowerCase().indexOf(t.language.toLowerCase()) !== -1);
-            });
-
-            if (matchedOs) {
-                if (matchedOs.cues && matchedOs.cues.length > 0) {
-                    activeCues = matchedOs.cues;
-                } else {
-                    fetch(matchedOs.url)
-                        .then(function (res) { return res.text(); })
-                        .then(function (srtText) {
-                            matchedOs.cues = parseSrt(srtText);
-                            if (selectedSubtitleIndex === index) {
-                                activeCues = matchedOs.cues;
-                                if (SunPlay.App && SunPlay.App.showToast) {
-                                    SunPlay.App.showToast('Loaded ' + langName + ' text subtitles (' + matchedOs.cues.length + ' lines)');
-                                }
-                            }
-                        })
-                        .catch(function () {});
-                }
-            } else {
-                // Automatically fetch OpenSubtitles catalog for this language
-                fetchOpenSubtitles(displayTitle, function () {
-                    var mTrack = subtitleTracks.find(function (t) {
-                        return (t.type === 'opensubtitles') && t.language && track.language &&
-                               (t.language.toLowerCase() === track.language.toLowerCase() ||
-                                t.language.toLowerCase().indexOf(track.language.toLowerCase()) !== -1 ||
-                                track.language.toLowerCase().indexOf(t.language.toLowerCase()) !== -1);
-                    });
-                    if (mTrack && mTrack.url) {
-                        fetch(mTrack.url)
-                            .then(function (res) { return res.text(); })
-                            .then(function (srtText) {
-                                mTrack.cues = parseSrt(srtText);
-                                if (selectedSubtitleIndex === index) {
-                                    activeCues = mTrack.cues;
-                                    if (SunPlay.App && SunPlay.App.showToast) {
-                                        SunPlay.App.showToast('Loaded ' + langName + ' subtitles (' + mTrack.cues.length + ' lines)');
-                                    }
-                                }
-                            })
-                            .catch(function () {});
-                    }
-                });
-            }
+            
+            // Note: We deliberately do NOT auto-fetch OpenSubtitles here anymore to avoid silent failures and wrong subs.
+            // Users can manually search OpenSubtitles using the search button if the embedded track fails to render.
         }
         updateSubtitleBadge();
     }
@@ -1392,8 +1404,9 @@ SunPlay.Player = (function () {
     }
 
     function renderSubtitleSheetHTML() {
+        var clearBtn = '<div class="sp-sheet-item sp-clear-sub-btn" data-row="-2" style="background: rgba(244, 67, 54, 0.15); border: 1px dashed rgba(244, 67, 54, 0.5); color: #f44336; font-weight: 700; margin-bottom: 8px;">🧹 Clear Added Subtitles</div>';
         var searchBtn = '<div class="sp-sheet-item sp-search-sub-btn" data-row="-1" style="background: rgba(255, 140, 0, 0.15); border: 1px dashed rgba(255, 140, 0, 0.5); color: #ff8c00; font-weight: 700; margin-bottom: 8px;">🔍 Search OpenSubtitles by Title...</div>';
-        var trackItems = searchBtn + '<div class="sp-sheet-item ' + (selectedSubtitleIndex === -1 ? 'active' : '') + '" data-row="0">Off</div>';
+        var trackItems = clearBtn + searchBtn + '<div class="sp-sheet-item ' + (selectedSubtitleIndex === -1 ? 'active' : '') + '" data-row="0">Off</div>';
         subtitleTracks.forEach(function (t, idx) {
             var activeClass = (selectedSubtitleIndex === idx) ? 'active' : '';
             trackItems += `<div class="sp-sheet-item ${activeClass}" data-row="${idx + 1}">${escapeHtml(t.label)}</div>`;
@@ -1433,6 +1446,38 @@ SunPlay.Player = (function () {
             </div>
         `;
         highlightSheetFocus();
+    }
+
+    function clearAddedSubtitles() {
+        var oldTrack = selectedSubtitleIndex >= 0 ? subtitleTracks[selectedSubtitleIndex] : null;
+        var oldId = oldTrack ? oldTrack.id : null;
+
+        subtitleTracks = subtitleTracks.filter(function (t) {
+            return t.type !== 'opensubtitles' && t.id.indexOf('sidecar') === -1;
+        });
+        
+        if (oldId) {
+            var newIdx = -1;
+            for (var i = 0; i < subtitleTracks.length; i++) {
+                if (subtitleTracks[i].id === oldId) {
+                    newIdx = i;
+                    break;
+                }
+            }
+            if (newIdx === -1) {
+                // We removed the active track
+                selectedSubtitleIndex = -1;
+                activeCues = [];
+                displayDirectCue('');
+            } else {
+                selectedSubtitleIndex = newIdx;
+            }
+        }
+        
+        updateSubtitleBadge();
+        if (SunPlay.App && SunPlay.App.showToast) {
+            SunPlay.App.showToast('Cleared added subtitles');
+        }
     }
 
     function openAudioSheet() {
@@ -1530,14 +1575,24 @@ SunPlay.Player = (function () {
         if (sheetOpen === 'sub') {
             if (sheetFocusCol === 0) {
                 var target = sheetOverlay.querySelector(`#sheet-col-tracks .sp-sheet-item[data-row="${sheetFocusRow}"]`);
-                if (target) target.classList.add('focused');
+                if (target) {
+                    target.classList.add('focused');
+                    if (target.scrollIntoView) {
+                        try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e) { target.scrollIntoView(false); }
+                    }
+                }
             } else {
                 var rows = sheetOverlay.querySelectorAll('#sheet-col-style .sp-setting-row');
                 if (rows[sheetFocusRow]) rows[sheetFocusRow].classList.add('focused');
             }
         } else if (sheetOpen === 'audio') {
             var target = sheetOverlay.querySelector(`.sp-sheet-item[data-row="${sheetFocusRow}"]`);
-            if (target) target.classList.add('focused');
+            if (target) {
+                target.classList.add('focused');
+                if (target.scrollIntoView) {
+                    try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e) { target.scrollIntoView(false); }
+                }
+            }
         }
     }
 
@@ -1563,7 +1618,7 @@ SunPlay.Player = (function () {
                 <div class="sp-modal-title">🔍 Search OpenSubtitles</div>
                 <div class="sp-modal-desc">Search subtitles by movie or series name (VLC-style):</div>
                 <div style="margin-bottom: 20px;">
-                    <input type="text" id="sp-sub-search-input" class="url-input" style="width: 100%; box-sizing: border-box; font-size: 22px; padding: 14px;" value="${escapeHtml(displayTitle)}" placeholder="Enter title e.g. Avatar Fire and Ash">
+                    <input type="text" id="sp-sub-search-input" class="url-input" style="width: 100%; box-sizing: border-box; font-size: 22px; padding: 14px;" value="${escapeHtml(getSubtitleSearchQuery())}" placeholder="Enter title e.g. Avatar Fire and Ash">
                 </div>
                 <div class="sp-modal-actions" style="flex-direction: row; justify-content: flex-end; gap: 14px;">
                     <button class="sp-modal-btn secondary" id="sp-sub-cancel-search" tabindex="0">Cancel</button>
@@ -1599,10 +1654,11 @@ SunPlay.Player = (function () {
         doBtn.addEventListener('click', executeSearch);
         cancelBtn.addEventListener('click', closeSubSearchModal);
         
+        // Remove the enter key listener on the input so WebOS can open the virtual keyboard
         input.addEventListener('keydown', function (e) {
             if (e.keyCode === 13) {
-                e.preventDefault();
-                executeSearch();
+                // Do NOT preventDefault here. Let the virtual keyboard open or close natively.
+                // WebOS will emit Enter when clicking the input, which opens the keyboard.
             }
         });
 
@@ -1656,11 +1712,13 @@ SunPlay.Player = (function () {
                 doBtn.focus();
             }
         } else if (key === 13) { // Enter
-            e.preventDefault();
-            e.stopPropagation();
             if (active === cancelBtn) {
+                e.preventDefault();
+                e.stopPropagation();
                 closeSubSearchModal();
-            } else {
+            } else if (active === doBtn) {
+                e.preventDefault();
+                e.stopPropagation();
                 var q = input.value.trim();
                 if (q) {
                     var statusEl = document.getElementById('sp-sub-search-status');
@@ -1678,6 +1736,7 @@ SunPlay.Player = (function () {
                     });
                 }
             }
+            // Note: if active === input, we do nothing and let WebOS handle it (open virtual keyboard)
         } else if (key === 461 || key === 27 || key === 8) { // Back
             e.preventDefault();
             e.stopPropagation();
@@ -1986,7 +2045,7 @@ SunPlay.Player = (function () {
     function handleSheetKey(key, e) {
         if (key === 38) { // Up
             e.preventDefault();
-            var minRow = (sheetOpen === 'sub' && sheetFocusCol === 0) ? -1 : 0;
+            var minRow = (sheetOpen === 'sub' && sheetFocusCol === 0) ? -2 : 0;
             sheetFocusRow = Math.max(minRow, sheetFocusRow - 1);
             highlightSheetFocus();
         } else if (key === 40) { // Down
@@ -2011,7 +2070,10 @@ SunPlay.Player = (function () {
             e.preventDefault();
             if (sheetOpen === 'sub') {
                 if (sheetFocusCol === 0) {
-                    if (sheetFocusRow === -1) {
+                    if (sheetFocusRow === -2) {
+                        clearAddedSubtitles();
+                        renderSubtitleSheetHTML();
+                    } else if (sheetFocusRow === -1) {
                         openSubtitleSearchModal();
                     } else {
                         selectSubtitle(sheetFocusRow - 1);
