@@ -1483,7 +1483,7 @@ SunPlay.Player = (function () {
     function openAudioSheet() {
         sheetOpen = 'audio';
         sheetFocusCol = 0;
-        sheetFocusRow = selectedAudioIndex;
+        sheetFocusRow = Math.max(0, Math.min(selectedAudioIndex, audioTracks.length - 1));
 
         var items = '';
         if (audioTracks.length === 0) {
@@ -2050,7 +2050,9 @@ SunPlay.Player = (function () {
             highlightSheetFocus();
         } else if (key === 40) { // Down
             e.preventDefault();
-            var max = (sheetOpen === 'sub' && sheetFocusCol === 0) ? subtitleTracks.length : 3;
+            var max = (sheetOpen === 'sub' && sheetFocusCol === 0)
+                ? subtitleTracks.length
+                : sheetOpen === 'audio' ? Math.max(0, audioTracks.length - 1) : 3;
             sheetFocusRow = Math.min(max, sheetFocusRow + 1);
             highlightSheetFocus();
         } else if (key === 37) { // Left

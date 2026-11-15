@@ -41,7 +41,7 @@ extern long rede_teto;
 // Segue os redirecionamentos e devolve o endereco FINAL, sem baixar o corpo.
 // Serve para saber se um link de debrid leva ao arquivo ou a um video de aviso
 // ("downloading.mp4", "slate.mp4") — que TOCA NORMALMENTE e por isso nao da
-// erro nenhum. 1 se conseguiu resolver.
+// erro nenhum. 1 se resolveu para uma resposta HTTP 2xx.
 int rede_url_final(const char *url, int segundos, char *dst, unsigned tam);
 
 // POST de JSON. Existe para o Trakt, que so aceita escrita por POST.

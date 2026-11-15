@@ -236,6 +236,14 @@ int rede_url_final(const char *url, int segundos, char *dst, unsigned tam) {
   corpo = nv_http("GET", url, cabs, NULL, &n, &http, dst, (int)tam);
   free(cabs);
   free(corpo);
+  if (http < 200 || http >= 300) {
+    char seg[120];
+    dst[0] = 0;
+    printf("[rede] validacao de stream recusada (HTTP %d) em %s\n",
+           http, rede_url_publica(url, seg, sizeof seg));
+    fflush(stdout);
+    return 0;
+  }
   return dst[0] ? 1 : 0;
 }
 
@@ -548,6 +556,7 @@ int rede_url_final(const char *url, int segundos, char *dst, unsigned tam) {
   Balde b = { NULL, 0 };
   void *c;
   char *fim = NULL;
+  long http = 0;
   int r;
   if (!url || !*url || !abrir() || !curl_getinfo) return 0;
   c = curl_init();
@@ -565,11 +574,22 @@ int rede_url_final(const char *url, int segundos, char *dst, unsigned tam) {
   // HEAD com 405 ou mentem no redirecionamento, mas honram Range.
   curl_setopt(c, OPT_RANGE, "0-64");
   r = curl_perform(c);
-  if (!r) curl_getinfo(c, INFO_URL_FINAL, &fim);
-  if (!r && fim) snprintf(dst, tam, "%s", fim);
+  if (!r) {
+    curl_getinfo(c, INFO_RESPONSE_CODE, &http);
+    curl_getinfo(c, INFO_URL_FINAL, &fim);
+  }
+  if (!r && http >= 200 && http < 300 && fim) snprintf(dst, tam, "%s", fim);
   curl_cleanup(c);
   free(b.p);
-  return (!r && fim) ? 1 : 0;
+  if (r || http < 200 || http >= 300 || !fim) {
+    char seg[120];
+    dst[0] = 0;
+    if (!r && http >= 400)
+      printf("[rede] validacao de stream recusada (HTTP %ld) em %s\n",
+             http, rede_url_publica(url, seg, sizeof seg));
+    return 0;
+  }
+  return 1;
 }
 
 char *rede_postar(const char *url, int segundos, const char *const *cab,
