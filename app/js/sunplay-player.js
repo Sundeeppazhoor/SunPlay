@@ -248,7 +248,19 @@ SunPlay.Player = (function () {
 
         console.log('[SunPlay.Player] Loading stream:', url);
         
-        loadMediaSource(url);
+        // Keep playback on the URL path used by the earlier working player.
+        // Setting type on <video> is only a hint; a <source> element with an
+        // unsupported MIME can prevent webOS from ever loading metadata.
+        if (url.indexOf('.m3u8') !== -1) {
+            video.setAttribute('type', 'application/x-mpegURL');
+        } else if (url.indexOf('.mkv') !== -1) {
+            video.setAttribute('type', 'video/x-matroska');
+        } else {
+            video.removeAttribute('type');
+        }
+
+        video.src = url;
+        video.load();
 
         var playPromise = video.play();
         if (playPromise && playPromise.catch) {
@@ -1865,7 +1877,9 @@ SunPlay.Player = (function () {
                 console.warn('[SunPlay.Player] Stream failed on resume seek. Recovering from start...');
                 try {
                     localStorage.removeItem('sp_resume_' + encodeURIComponent(currentUrl));
-                    loadMediaSource(currentUrl);
+                    video.removeAttribute('src');
+                    video.load();
+                    video.src = currentUrl;
                     video.currentTime = 0;
                     video.play();
                     if (SunPlay.App && SunPlay.App.showToast) {
@@ -1889,43 +1903,6 @@ SunPlay.Player = (function () {
                 SunPlay.App.showToast(reason);
             }
         });
-    }
-
-    function loadMediaSource(url) {
-        var source = document.createElement('source');
-        var filename = extractFilename(url).toLowerCase();
-        var extension = filename.match(/\.([a-z0-9]+)$/);
-        var mediaTypes = {
-            avi: 'video/x-msvideo',
-            m2ts: 'video/mp2t',
-            m3u8: 'application/x-mpegURL',
-            mkv: 'video/x-matroska',
-            mov: 'video/quicktime',
-            mp4: 'video/mp4',
-            mpeg: 'video/mpeg',
-            mpg: 'video/mpeg',
-            ts: 'video/mp2t',
-            webm: 'video/webm'
-        };
-        var type = extension ? mediaTypes[extension[1]] : '';
-
-        if (window.webOS) {
-            var mediaOption = {
-                htmlMediaOption: {
-                    useUMediaPipeline: true
-                }
-            };
-            type = (type || 'video/mp4') + ';mediaOption=' +
-                encodeURIComponent(JSON.stringify(mediaOption));
-        }
-        if (type) source.type = type;
-        source.src = url;
-
-        video.pause();
-        video.removeAttribute('src');
-        video.innerHTML = '';
-        video.appendChild(source);
-        video.load();
     }
 
     /* ================= KEY / D-PAD HANDLER ================= */
