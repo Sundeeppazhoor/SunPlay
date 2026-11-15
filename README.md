@@ -59,6 +59,12 @@ You have three convenient ways to load a stream:
   1. Previously played links are automatically saved in the **Recent History** section.
   2. Click any history item to choose **Resume** (from where you left off) or **Start from Beginning**.
 
+### Host the Standalone Phone Sender
+
+The repository-root `sender.html` provides a mobile-friendly sender with a pairing-code field, clipboard paste, and recent casts. This build's QR code opens `https://sundeeppazhoor.github.io/SunPlay/sender.html?code=...`; the TV continues listening on its ntfy topic in the background.
+
+To publish the sender, push the `beta` branch, then open the repository's **Settings → Pages** and select **Deploy from a branch**, branch **beta**, folder **/(root)**, and **Save**. GitHub Pages must finish deploying before the QR link will work. If Pages is configured to publish a different branch or custom domain, update the QR URL in `app/js/qrcode.js` to match that published `sender.html` address.
+
 ### Step 3: Use On-Screen Remote Controls
 While the video is playing, press **Enter / OK** or any D-pad arrow on your Magic Remote to reveal the on-screen display (OSD):
 - **Audio Tracks**: Switch between embedded audio streams (Hindi, English, Tamil, Telugu, 5.1 / 7.1 surround sound).

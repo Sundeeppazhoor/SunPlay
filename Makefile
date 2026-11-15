@@ -1,8 +1,8 @@
 # SunPlay - Native Makefile
 
-APP_ID = com.sunplay.native
-VERSION = 1.0.0
-IPK_NAME = $(APP_ID)_$(VERSION)_arm.ipk
+APP_ID = com.sunplay.player
+VERSION = 1.0.17
+IPK_NAME = $(APP_ID)_$(VERSION)_all.ipk
 
 all: package
 

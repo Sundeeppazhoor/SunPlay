@@ -33,7 +33,10 @@ SunPlay.Player = (function () {
     var currentRawTitle = '';
     var displayTitle = 'Stream';
     var isPlaying = false;
+    var isPlayerActive = false;
     var isBuffering = false;
+    var triedPipelineFallback = false;
+    var currentPipelineMode = false;
 
     var aspectModes = [
         { label: 'Original', fit: 'contain', scale: 1 },
@@ -207,6 +210,56 @@ SunPlay.Player = (function () {
         container.appendChild(infoOverlay);
     }
 
+    function detectMimeType(url) {
+        var filename = extractFilename(url || '');
+        if (/\.m3u8$/i.test(filename)) return 'application/x-mpegURL';
+        if (/\.mpd$/i.test(filename)) return 'application/dash+xml';
+        if (/\.webm$/i.test(filename)) return 'video/webm';
+        if (/\.ts$/i.test(filename)) return 'video/mp2t';
+        if (/\.avi$/i.test(filename)) return 'video/x-msvideo';
+        if (/\.mkv$/i.test(filename)) return 'video/x-matroska';
+        if (/\.(mp4|m4v)$/i.test(filename)) return 'video/mp4';
+        return '';
+    }
+
+    function loadVideoSource(url, useWebOSMediaOption) {
+        if (!video) return;
+
+        video.pause();
+        video.removeAttribute('src');
+        video.innerHTML = '';
+
+        var mime = detectMimeType(url);
+        if (useWebOSMediaOption && window.webOS) {
+            var source = document.createElement('source');
+            source.src = url;
+            var mediaOption = {
+                htmlMediaOption: { useUMediaPipeline: true },
+                mediaTransportType: 'URI'
+            };
+            var carrierMime = (mime === 'application/x-mpegURL' || mime === 'application/dash+xml')
+                ? mime
+                : 'video/mp4';
+            source.setAttribute('type', carrierMime + ';mediaOption=' +
+                encodeURIComponent(JSON.stringify(mediaOption)));
+            video.appendChild(source);
+            console.log('[SunPlay.Player] Loading with webOS UMediaPipeline:', carrierMime);
+        } else {
+            if (mime) video.setAttribute('type', mime);
+            else video.removeAttribute('type');
+            video.src = url;
+            console.log('[SunPlay.Player] Loading direct video source, MIME hint:', mime || 'auto');
+        }
+
+        video.load();
+        var playPromise = video.play();
+        if (playPromise && playPromise.catch) {
+            playPromise.catch(function (err) {
+                console.warn('[SunPlay.Player] Autoplay notice:', err);
+            });
+        }
+    }
+
     /* ================= PLAYBACK CONTROL ================= */
 
     function play(url, options) {
@@ -217,6 +270,8 @@ SunPlay.Player = (function () {
         if (!video) return;
 
         currentUrl = url;
+        triedPipelineFallback = false;
+        isPlayerActive = true;
         currentRawTitle = (options && options.title) || extractFilename(url) || 'Stream';
         displayTitle = cleanStreamTitle(currentRawTitle);
 
@@ -227,6 +282,20 @@ SunPlay.Player = (function () {
         if (titleEl) {
             titleEl.innerText = displayTitle;
             titleEl.setAttribute('title', currentRawTitle);
+        }
+
+        var hdrBadge = document.getElementById('sp-badge-hdr');
+        if (hdrBadge) {
+            var rawCheck = (currentRawTitle + ' ' + url).toUpperCase();
+            if (/\b(DOVI|DV|DOLBY\.?VISION)\b/.test(rawCheck)) {
+                hdrBadge.style.display = 'inline-block';
+                hdrBadge.innerText = 'Dolby Vision';
+            } else if (/\b(HDR10\+|HDR10|HDR)\b/.test(rawCheck)) {
+                hdrBadge.style.display = 'inline-block';
+                hdrBadge.innerText = 'HDR';
+            } else {
+                hdrBadge.style.display = 'none';
+            }
         }
 
         var aspectLbl = document.getElementById('btn-aspect-label');
@@ -247,27 +316,10 @@ SunPlay.Player = (function () {
         if (homeEl) homeEl.style.display = 'none';
 
         console.log('[SunPlay.Player] Loading stream:', url);
-        
-        // Keep playback on the URL path used by the earlier working player.
-        // Setting type on <video> is only a hint; a <source> element with an
-        // unsupported MIME can prevent webOS from ever loading metadata.
-        if (url.indexOf('.m3u8') !== -1) {
-            video.setAttribute('type', 'application/x-mpegURL');
-        } else if (url.indexOf('.mkv') !== -1) {
-            video.setAttribute('type', 'video/x-matroska');
-        } else {
-            video.removeAttribute('type');
-        }
-
-        video.src = url;
-        video.load();
-
-        var playPromise = video.play();
-        if (playPromise && playPromise.catch) {
-            playPromise.catch(function (err) {
-                console.warn('[SunPlay.Player] Autoplay notice:', err);
-            });
-        }
+        var pathHasExt = /\.(mkv|mp4|m3u8|webm|ts|avi|mov|m4v)$/i.test(url.split('?')[0]);
+        currentPipelineMode = Boolean(window.webOS && !pathHasExt);
+        triedPipelineFallback = false;
+        loadVideoSource(url, currentPipelineMode);
 
         var forceStart = (options && options.resume === false);
 
@@ -275,9 +327,7 @@ SunPlay.Player = (function () {
         if (!forceStart) {
             checkAndApplyAutoResume(url);
         } else {
-            try {
-                localStorage.removeItem('sp_resume_' + encodeURIComponent(url));
-            } catch (e) {}
+            clearSavedProgress(url);
         }
 
         // Show OSD briefly
@@ -292,8 +342,17 @@ SunPlay.Player = (function () {
         // 3. Probe for companion sidecar subtitles (.srt, .vtt)
         // probeSidecarSubtitles(url);
 
-        // 4. Probe embedded container tracks (MKV/MP4 EBML header + release tags)
-        probeContainerTracks(url);
+        // Avoid competing with the initial media request, especially on signed URLs.
+        var streamFilename = extractFilename(url);
+        var hasPresignedSignature = /[?&]X-Amz-Signature=/i.test(url);
+        if (hasPresignedSignature && /\.(mkv|mp4|avi|webm|ts)$/i.test(streamFilename)) {
+            applyProbedTracks(fallbackFilenameTracks(streamFilename));
+        } else {
+            video.addEventListener('loadedmetadata', function probeAfterMetadata() {
+                video.removeEventListener('loadedmetadata', probeAfterMetadata);
+                probeContainerTracks(url);
+            });
+        }
 
         // 5. Start auto-resume tracker
         startResumeTracker();
@@ -320,6 +379,7 @@ SunPlay.Player = (function () {
         try {
             video.pause();
             video.removeAttribute('src');
+            video.innerHTML = '';
             video.load();
         } catch (e) {}
 
@@ -332,6 +392,7 @@ SunPlay.Player = (function () {
             subOverlay.style.display = 'none';
         }
         isPlaying = false;
+        isPlayerActive = false;
 
         // Restore home screen DOM
         var homeEl = document.getElementById('home-screen');
@@ -353,6 +414,10 @@ SunPlay.Player = (function () {
             updatePlayBtn(false);
         }
         showOSD();
+    }
+
+    function pause() {
+        if (video && !video.paused) video.pause();
     }
 
     function seekRelative(seconds) {
@@ -459,12 +524,28 @@ SunPlay.Player = (function () {
 
     /* ================= AUTO-RESUME ENGINE ================= */
 
+    function getResumeKey(url) {
+        var filename = extractFilename(url);
+        if (filename && filename !== 'Stream' && /\.(mkv|mp4|avi|webm|ts|m3u8|mpd|mov|flv|wmv|m4v|mpg|mpeg)$/i.test(filename)) {
+            return 'sp_resume_file_' + encodeURIComponent(filename);
+        }
+        return 'sp_resume_' + encodeURIComponent((url || '').split('?')[0]);
+    }
+
     function getSavedProgress(url) {
         try {
-            var data = localStorage.getItem('sp_resume_' + encodeURIComponent(url));
+            var data = localStorage.getItem(getResumeKey(url));
+            if (!data) data = localStorage.getItem('sp_resume_' + encodeURIComponent(url));
             if (data) return parseFloat(data) || 0;
         } catch (e) {}
         return 0;
+    }
+
+    function clearSavedProgress(url) {
+        try {
+            localStorage.removeItem(getResumeKey(url));
+            localStorage.removeItem('sp_resume_' + encodeURIComponent(url));
+        } catch (e) {}
     }
 
     function saveCurrentProgress() {
@@ -472,24 +553,27 @@ SunPlay.Player = (function () {
         try {
             var pos = video.currentTime;
             if (pos > 10 && (!video.duration || pos < video.duration - 30)) {
-                localStorage.setItem('sp_resume_' + encodeURIComponent(currentUrl), pos.toString());
+                localStorage.setItem(getResumeKey(currentUrl), pos.toString());
             } else if (video.duration && pos >= video.duration - 30) {
-                localStorage.removeItem('sp_resume_' + encodeURIComponent(currentUrl));
+                clearSavedProgress(currentUrl);
             }
         } catch (e) {}
     }
 
     function checkAndApplyAutoResume(url) {
+        if (SunPlay.App && SunPlay.App.settings && SunPlay.App.settings.autoResume === false) {
+            return;
+        }
         var pos = getSavedProgress(url);
         if (pos > 10) {
-            isApplyingResume = true;
-            if (resumeTimeout) clearTimeout(resumeTimeout);
-            resumeTimeout = setTimeout(function () {
-                isApplyingResume = false;
-            }, 6000);
-
             var onLoaded = function () {
                 video.removeEventListener('loadedmetadata', onLoaded);
+                isApplyingResume = true;
+                if (resumeTimeout) clearTimeout(resumeTimeout);
+                resumeTimeout = setTimeout(function () {
+                    isApplyingResume = false;
+                    resumeTimeout = null;
+                }, 6000);
                 try {
                     video.currentTime = pos;
                     if (SunPlay.App && SunPlay.App.showToast) {
@@ -498,6 +582,8 @@ SunPlay.Player = (function () {
                 } catch (e) {
                     console.warn('[SunPlay.Player] Auto-resume failed on unseekable stream:', e);
                     isApplyingResume = false;
+                    clearTimeout(resumeTimeout);
+                    resumeTimeout = null;
                 }
             };
             video.addEventListener('loadedmetadata', onLoaded);
@@ -932,6 +1018,13 @@ SunPlay.Player = (function () {
                 { key: 'German', code: 'ger', name: 'German' },
                 { key: 'Japanese', code: 'jpn', name: 'Japanese' }
             ];
+            var detectedCodec = 'STEREO';
+            if (/\bAtmos\b/i.test(str)) detectedCodec = 'Dolby Atmos';
+            else if (/\bTrueHD\b/i.test(str)) detectedCodec = 'TrueHD';
+            else if (/\b(DDP|EAC3|DD\+)\b/i.test(str)) detectedCodec = 'DD+ 5.1';
+            else if (/\b(DTS-HD|DTS:X|DTS)\b/i.test(str)) detectedCodec = 'DTS';
+            else if (/\b(AC3|DD5\.1)\b/i.test(str)) detectedCodec = 'AC3 5.1';
+            else if (/\bAAC\b/i.test(str)) detectedCodec = 'AAC';
 
             languages.forEach(function (l) {
                 var re = new RegExp('\\b' + l.key + '\\b', 'i');
@@ -939,7 +1032,7 @@ SunPlay.Player = (function () {
                     audio.push({
                         number: audio.length + 1,
                         type: 2,
-                        codec: 'A_UNKNOWN',
+                        codec: detectedCodec,
                         name: l.name + ' Audio',
                         language: l.code
                     });
@@ -1871,19 +1964,30 @@ SunPlay.Player = (function () {
             var msg = err ? `Error code ${err.code}: ${err.message}` : 'Playback error';
             console.error('[SunPlay.Player] Error:', msg);
 
+            if (!isPlayerActive) return;
+
+            if (!triedPipelineFallback && window.webOS && currentUrl && err &&
+                (err.code === 2 || err.code === 3 || err.code === 4)) {
+                triedPipelineFallback = true;
+                currentPipelineMode = !currentPipelineMode;
+                console.warn('[SunPlay.Player] Retrying with alternate pipeline mode:', currentPipelineMode);
+                loadVideoSource(currentUrl, currentPipelineMode);
+                return;
+            }
+
             // Unseekable / Range Error Recovery: If error happened during resume seek, restart cleanly from start!
             if (isApplyingResume) {
                 isApplyingResume = false;
                 console.warn('[SunPlay.Player] Stream failed on resume seek. Recovering from start...');
+                if (resumeTimeout) {
+                    clearTimeout(resumeTimeout);
+                    resumeTimeout = null;
+                }
                 try {
-                    localStorage.removeItem('sp_resume_' + encodeURIComponent(currentUrl));
-                    video.removeAttribute('src');
-                    video.load();
-                    video.src = currentUrl;
-                    video.currentTime = 0;
-                    video.play();
+                    clearSavedProgress(currentUrl);
+                    loadVideoSource(currentUrl, currentPipelineMode);
                     if (SunPlay.App && SunPlay.App.showToast) {
-                        SunPlay.App.showToast('Stream is download-only / non-seekable. Playing from start.');
+                        SunPlay.App.showToast('Stream failed at resume position. Restarting from the beginning.');
                     }
                     return;
                 } catch (recErr) {
@@ -2020,7 +2124,8 @@ SunPlay.Player = (function () {
                     break;
                 case 13: // Enter / OK
                     e.preventDefault();
-                    handleButtonAction(currentFocus);
+                    if (inSeekBar) togglePlay();
+                    else handleButtonAction(currentFocus);
                     break;
             }
         });
@@ -2253,6 +2358,7 @@ SunPlay.Player = (function () {
     return {
         init: init,
         play: play,
+        pause: pause,
         stop: stop,
         togglePlay: togglePlay,
         seekRelative: seekRelative,
@@ -2260,6 +2366,7 @@ SunPlay.Player = (function () {
         hideOSD: hideOSD,
         cleanStreamTitle: cleanStreamTitle,
         getSavedProgress: getSavedProgress,
+        clearSavedProgress: clearSavedProgress,
         clearCache: function () {
             subtitleTracks = [];
             audioTracks = [];

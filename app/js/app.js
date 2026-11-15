@@ -422,17 +422,17 @@ SunPlay.App = (function () {
 
         startBtn.addEventListener('click', function () {
             closeModal();
-            try {
-                localStorage.removeItem('sp_resume_' + encodeURIComponent(item.url));
-            } catch (e) {}
+            if (SunPlay.Player && SunPlay.Player.clearSavedProgress) {
+                SunPlay.Player.clearSavedProgress(item.url);
+            }
             launchPlayer(item.url, item.title, { resume: false });
         });
 
         deleteBtn.addEventListener('click', function () {
             closeModal();
-            try {
-                localStorage.removeItem('sp_resume_' + encodeURIComponent(item.url));
-            } catch (e) {}
+            if (SunPlay.Player && SunPlay.Player.clearSavedProgress) {
+                SunPlay.Player.clearSavedProgress(item.url);
+            }
             var history = getHistory().filter(function (h) { return h.url !== item.url; });
             if (SunPlay.Utils && SunPlay.Utils.storage) {
                 SunPlay.Utils.storage.set('sunplay_history', history);
@@ -971,7 +971,7 @@ SunPlay.App = (function () {
         if (!overlay) {
             overlay = document.createElement('div');
             overlay.id = 'sp-error-overlay';
-            overlay.className = 'sp-popup-overlay'; // Reusing some CSS from controls
+            overlay.className = 'sp-popup-overlay';
             overlay.style.display = 'flex';
             overlay.style.zIndex = '20000';
             
@@ -1023,6 +1023,7 @@ SunPlay.App = (function () {
         getCurrentScreen: getCurrentScreen,
         playUrl: playUrl,
         showToast: showToast,
+        renderHistory: renderHistory,
         settings: settings
     };
 })();

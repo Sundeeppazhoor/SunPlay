@@ -21,8 +21,8 @@ echo [SUCCESS] Package created in dist\
 dir dist\*.ipk
 echo ===================================================
 echo To install on your LG TV:
-echo   ares-install dist\com.sunplay.native_1.0.0_all.ipk -d ^<device_name^>
+echo   ares-install dist\com.sunplay.player_1.0.17_all.ipk -d ^<device_name^>
 echo To launch:
-echo   ares-launch com.sunplay.native -d ^<device_name^>
+echo   ares-launch com.sunplay.player -d ^<device_name^>
 echo ===================================================
 pause

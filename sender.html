@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0a16">
+    <title>SunPlay Remote Cast</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0a0a16;
+            --card: #151525;
+            --accent: #ff8c00;
+            --text: #f0f0f5;
+            --muted: #8e8ea0;
+            --success: #2ecc71;
+            --danger: #ff5252;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 20px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        main {
+            width: 100%;
+            max-width: 480px;
+            margin: 0 auto;
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 8px 0 20px;
+        }
+        h1 { margin: 0; color: var(--accent); font-size: 25px; }
+        .badge {
+            padding: 7px 10px;
+            border: 1px solid rgba(255, 140, 0, .4);
+            border-radius: 12px;
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .card {
+            margin-bottom: 18px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, .08);
+            border-radius: 18px;
+            background: var(--card);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        input, textarea {
+            display: block;
+            width: 100%;
+            margin-bottom: 18px;
+            padding: 13px;
+            border: 1px solid rgba(255, 255, 255, .16);
+            border-radius: 12px;
+            outline: none;
+            background: rgba(255, 255, 255, .05);
+            color: var(--text);
+            font: inherit;
+        }
+        input:focus, textarea:focus { border-color: var(--accent); }
+        textarea { min-height: 120px; resize: vertical; overflow-wrap: anywhere; }
+        .preview {
+            display: none;
+            margin: -4px 0 16px;
+            padding: 11px;
+            border-left: 3px solid var(--accent);
+            border-radius: 6px;
+            background: rgba(255, 140, 0, .08);
+            overflow-wrap: anywhere;
+            font-size: 14px;
+        }
+        .actions { display: flex; gap: 10px; }
+        button {
+            min-height: 48px;
+            padding: 12px 16px;
+            border: 0;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, .1);
+            color: var(--text);
+            font: inherit;
+            font-weight: 700;
+        }
+        button:disabled { opacity: .6; }
+        #send-btn { flex: 2; background: var(--accent); }
+        #paste-btn { flex: 1; }
+        .status { min-height: 20px; margin: 14px 0 0; text-align: center; font-size: 14px; }
+        .status.ok { color: var(--success); }
+        .status.err { color: var(--danger); }
+        .history-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, .08);
+        }
+        .history-item:last-child { border-bottom: 0; }
+        .history-title {
+            flex: 1;
+            overflow: hidden;
+            color: #ddd;
+            font-size: 14px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-cast { padding: 8px 10px; color: var(--accent); }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <h1>SunPlay Remote</h1>
+            <span class="badge" id="pair-status">TV pairing</span>
+        </header>
+
+        <section class="card" aria-label="Send a stream to SunPlay">
+            <label for="topic-input">TV pairing code</label>
+            <input id="topic-input" type="text" placeholder="6-character code" autocomplete="off" spellcheck="false">
+
+            <label for="url-input">Stream URL</label>
+            <textarea id="url-input" placeholder="Paste an HTTP or HTTPS stream URL" autocapitalize="off" spellcheck="false"></textarea>
+            <div class="preview" id="detected-preview"></div>
+
+            <div class="actions">
+                <button type="button" id="paste-btn">Paste</button>
+                <button type="button" id="send-btn">Cast to TV</button>
+            </div>
+            <p class="status" id="status-msg" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="card" id="history-card" aria-label="Recent casts" hidden>
+            <label>Recent casts</label>
+            <div id="phone-history-list"></div>
+        </section>
+    </main>
+
+    <script>
+        (function () {
+            'use strict';
+
+            var topicInput = document.getElementById('topic-input');
+            var urlInput = document.getElementById('url-input');
+            var pasteBtn = document.getElementById('paste-btn');
+            var sendBtn = document.getElementById('send-btn');
+            var statusMsg = document.getElementById('status-msg');
+            var previewBox = document.getElementById('detected-preview');
+            var pairStatus = document.getElementById('pair-status');
+            var historyCard = document.getElementById('history-card');
+            var historyList = document.getElementById('phone-history-list');
+
+            function storageGet(key, fallback) {
+                try {
+                    var value = localStorage.getItem(key);
+                    return value === null ? fallback : value;
+                } catch (e) {
+                    return fallback;
+                }
+            }
+
+            function storageSet(key, value) {
+                try { localStorage.setItem(key, value); } catch (e) {}
+            }
+
+            var params = new URLSearchParams(window.location.search);
+            var initialTopic = params.get('code') || params.get('topic') || storageGet('sunplay_last_topic', '');
+            if (initialTopic) {
+                if (!initialTopic.toLowerCase().startsWith('sunplay_')) initialTopic = 'sunplay_' + initialTopic;
+                topicInput.value = initialTopic;
+                pairStatus.textContent = 'Paired: ' + initialTopic.substring('sunplay_'.length);
+            }
+
+            function cleanTitle(filename) {
+                var name = filename.replace(/\.(mkv|mp4|avi|webm|ts|m3u8|mpd|m4v)$/i, '');
+                name = name.replace(/[._+]/g, ' ').replace(/\s+/g, ' ').trim();
+                var year = name.match(/^(.*?)\s+\(?((?:19|20)\d{2})\)?(?:\s|$)/);
+                if (year && year[1]) return year[1].trim() + ' (' + year[2] + ')';
+                return name || filename || 'Stream';
+            }
+
+            function extractFilename(rawUrl) {
+                try {
+                    var parsed = new URL(rawUrl);
+                    var disposition = parsed.searchParams.get('response-content-disposition') ||
+                        parsed.searchParams.get('content-disposition') || '';
+                    var match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)/i);
+                    if (match && match[1]) {
+                        var filename = match[1].trim();
+                        try { filename = decodeURIComponent(filename); } catch (e) {}
+                        return filename;
+                    }
+                    var segments = parsed.pathname.split('/').filter(Boolean);
+                    return segments.length ? decodeURIComponent(segments[segments.length - 1]) : parsed.hostname;
+                } catch (e) {
+                    return 'Stream URL';
+                }
+            }
+
+            function setStatus(message, type) {
+                statusMsg.textContent = message;
+                statusMsg.className = 'status' + (type ? ' ' + type : '');
+            }
+
+            function extractUrlFromText(raw) {
+                var match = (raw || '').trim().match(/https?:\/\/[^\s"'<>]+/i);
+                return match ? match[0].replace(/[.,!?;)\]]+$/, '') : (raw || '').trim();
+            }
+
+            function updatePreview() {
+                var value = extractUrlFromText(urlInput.value);
+                if (!validateUrl(value)) {
+                    previewBox.style.display = 'none';
+                    previewBox.textContent = '';
+                    return;
+                }
+                previewBox.textContent = 'Detected file: ' + cleanTitle(extractFilename(value));
+                previewBox.style.display = 'block';
+            }
+
+            function readHistory() {
+                try {
+                    var history = JSON.parse(storageGet('sunplay_phone_hist', '[]'));
+                    return Array.isArray(history) ? history : [];
+                } catch (e) {
+                    return [];
+                }
+            }
+
+            function saveHistory(url, title) {
+                var history = readHistory().filter(function (item) { return item.url !== url; });
+                history.unshift({ url: url, title: title });
+                storageSet('sunplay_phone_hist', JSON.stringify(history.slice(0, 8)));
+                renderHistory();
+            }
+
+            function renderHistory() {
+                var history = readHistory();
+                historyList.textContent = '';
+                historyCard.hidden = history.length === 0;
+                history.forEach(function (item) {
+                    var row = document.createElement('div');
+                    row.className = 'history-item';
+                    var title = document.createElement('div');
+                    title.className = 'history-title';
+                    title.textContent = item.title || 'Stream';
+                    var button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'history-cast';
+                    button.textContent = 'Cast again';
+                    button.addEventListener('click', function () {
+                        urlInput.value = item.url;
+                        updatePreview();
+                        sendToTv(item.url);
+                    });
+                    row.appendChild(title);
+                    row.appendChild(button);
+                    historyList.appendChild(row);
+                });
+            }
+
+            function validateUrl(value) {
+                try {
+                    var parsed = new URL(value);
+                    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname);
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            async function sendToTv(streamUrl) {
+                var topic = topicInput.value.trim();
+                if (!topic) {
+                    setStatus('Enter the TV pairing code first.', 'err');
+                    topicInput.focus();
+                    return;
+                }
+                if (!topic.toLowerCase().startsWith('sunplay_')) topic = 'sunplay_' + topic;
+                if (!/^sunplay_[a-z0-9]{6}$/i.test(topic)) {
+                    setStatus('Enter the 6-character code shown on the TV.', 'err');
+                    topicInput.focus();
+                    return;
+                }
+                if (!validateUrl(streamUrl)) {
+                    setStatus('Enter a valid HTTP or HTTPS stream URL.', 'err');
+                    urlInput.focus();
+                    return;
+                }
+
+                topicInput.value = topic;
+                storageSet('sunplay_last_topic', topic);
+                pairStatus.textContent = 'Paired: ' + topic.substring('sunplay_'.length);
+                sendBtn.disabled = true;
+                sendBtn.textContent = 'Sending...';
+                setStatus('Sending stream to TV...');
+
+                try {
+                    var endpoint = 'https://ntfy.sh/' + encodeURIComponent(topic);
+                    var response;
+                    for (var attempt = 1; attempt <= 2; attempt++) {
+                        try {
+                            response = await fetch(endpoint, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+                                body: streamUrl.trim()
+                            });
+                            if (response.ok) break;
+                            if (response.status === 429 && attempt < 2) {
+                                await new Promise(function (resolve) { setTimeout(resolve, 5000); });
+                                continue;
+                            }
+                            throw new Error('ntfy.sh returned HTTP ' + response.status);
+                        } catch (err) {
+                            if (attempt === 2) throw err;
+                            await new Promise(function (resolve) { setTimeout(resolve, 1200); });
+                        }
+                    }
+                    if (!response || !response.ok) throw new Error('Could not send the stream URL.');
+                    setStatus('Sent to TV. Playback should start shortly.', 'ok');
+                    saveHistory(streamUrl.trim(), cleanTitle(extractFilename(streamUrl)));
+                } catch (err) {
+                    setStatus('Send failed: ' + err.message, 'err');
+                } finally {
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Cast to TV';
+                }
+            }
+
+            urlInput.addEventListener('input', updatePreview);
+            sendBtn.addEventListener('click', function () {
+                sendToTv(extractUrlFromText(urlInput.value));
+            });
+            pasteBtn.addEventListener('click', async function () {
+                try {
+                    if (!navigator.clipboard || !navigator.clipboard.readText) throw new Error('Clipboard unavailable');
+                    var text = await navigator.clipboard.readText();
+                    if (!text) return;
+                    urlInput.value = text.trim();
+                    updatePreview();
+                    setStatus('Pasted from clipboard.', 'ok');
+                } catch (e) {
+                    urlInput.focus();
+                    setStatus('Use your phone keyboard to paste into the URL box.');
+                }
+            });
+
+            renderHistory();
+        })();
+    </script>
+</body>
+</html>
